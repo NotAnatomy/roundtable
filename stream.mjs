@@ -1,0 +1,2 @@
+export const frame=(event,data)=>`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+export function deltaSender(emit,delay=60){let pending,timer,last=0;const flush=()=>{clearTimeout(timer);timer=null;if(pending){emit('delta',pending);pending=null;last=Date.now();}};return {push(data){pending={roomId:data.roomId,id:data.id,text:data.text,activity:data.activity,activeAgent:data.activeAgent};if(!timer)timer=setTimeout(flush,Math.max(0,delay-(Date.now()-last)));},flush};}

@@ -1,0 +1,22 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import {collectGarbage,referencedIds} from '../retention.mjs';
+test('cleanup keeps retry context for failed and in-flight replies and uploads still referenced or recent',async()=>{
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),'rt-gc-')),requestDir=path.join(dir,'requests'),uploadDir=path.join(dir,'uploads');
+ await fs.mkdir(requestDir);await fs.mkdir(uploadDir);
+ const rooms=[{messages:[{id:'done',agentId:'codex',status:'complete'},{id:'failed',agentId:'codex',status:'error'},{id:'live',agentId:'claude',status:'streaming'},{id:'sys',agentId:'system',status:'error'},{id:'user',agentId:null,status:'complete',attachments:[{id:'a'.repeat(64),name:'kept.png'}]}]}];
+ for(const id of ['done','failed','live','sys','orphan'])await fs.writeFile(path.join(requestDir,id+'.json'),'{}');
+ for(const id of ['a','b','c'])await fs.writeFile(path.join(uploadDir,id.repeat(64)+'.json'),'{}');
+ await fs.writeFile(path.join(uploadDir,'notes.txt'),'ignored');
+ const old=new Date(Date.now()-10*24*60*60*1000);await fs.utimes(path.join(uploadDir,'b'.repeat(64)+'.json'),old,old);
+ const removed=await collectGarbage({rooms,requestDir,uploadDir});
+ assert.deepEqual(removed,{requests:3,uploads:1});
+ assert.deepEqual((await fs.readdir(requestDir)).sort(),['failed.json','live.json']);
+ assert.deepEqual((await fs.readdir(uploadDir)).sort(),['a'.repeat(64)+'.json','c'.repeat(64)+'.json','notes.txt']);
+ assert.deepEqual([...referencedIds(rooms).uploadIds],['a'.repeat(64)]);
+ assert.deepEqual(await collectGarbage({rooms,requestDir:path.join(dir,'missing'),uploadDir:path.join(dir,'missing')}),{requests:0,uploads:0});
+ await fs.rm(dir,{recursive:true,force:true});
+});

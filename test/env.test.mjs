@@ -1,0 +1,2 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {sanitizedEnv,STRIPPED_ENV} from '../native-env.mjs';
+test('native child environment strips gateway credentials and routing without losing PATH',()=>{const source=Object.fromEntries(STRIPPED_ENV.map(k=>[k,'test-value']));source.PATH='/bin';const clean=sanitizedEnv(source);assert.equal(clean.PATH,'/bin');for(const key of STRIPPED_ENV){assert.equal(clean[key],undefined);assert.equal(source[key],'test-value');}});
