@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.0
+
+### Added
+
+- Live task list for native agents: Claude tool calls and Codex items become steps with drawn checks, a travelling underline under the live row, and a plan (TodoWrite or Codex plan) as the top level when the agent publishes one. Shown in the reply and in a Working now rail section; kept with the message.
+- Claude may use TodoWrite in Work mode so it can publish a plan. It touches no files.
+
+### Changed
+
+- Work prompts ask agents to publish a short plan for multi-step requests.
+
 ## 0.6.0
 
 ### Added

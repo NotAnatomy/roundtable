@@ -5,6 +5,10 @@ import {spawn} from 'node:child_process';
 import {createInterface} from 'node:readline';
 import {requireCommand,commandEnv} from './commands.mjs';
 import {threadParams,turnParams} from './codex-protocol.mjs';
+import {describeTool,describeCodexItem} from './tasks.mjs';
+const planStatus=v=>({in_progress:'running',inProgress:'running',completed:'done',done:'done',failed:'failed'})[v]||'pending';
+export const claudePlan=todos=>({type:'plan',items:(Array.isArray(todos)?todos:[]).map(t=>({key:t.content,label:t.status==='in_progress'&&t.activeForm?t.activeForm:t.content,status:planStatus(t.status)}))});
+export const codexPlan=items=>({type:'plan',items:(Array.isArray(items)?items:[]).map(i=>({label:i.step||i.text||i.label||'',status:i.completed===true?'done':planStatus(i.status)}))});
 
 export function launch(command,args,cwd,signal) {
   signal.throwIfAborted();
@@ -17,10 +21,11 @@ export function launch(command,args,cwd,signal) {
   child.stdin.on('error',()=>{});
   return child;
 }
-export async function runClaude({prompt,session,cwd,signal,onText,onActivity,mode,allowEdits,model,effort,media=[]}) {
+export async function runClaude({prompt,session,cwd,signal,onText,onActivity,onEvent=()=>{},mode,allowEdits,model,effort,media=[]}) {
   const command=await requireCommand('claude');
   return new Promise((resolve,reject)=>{
-    const allowed=mode==='lounge'?'':allowEdits?'Read,Glob,Grep,Edit,Write':'Read,Glob,Grep';
+    // TodoWrite touches no files; it lets the agent publish the plan the task list displays.
+    const allowed=mode==='lounge'?'':allowEdits?'Read,Glob,Grep,Edit,Write,TodoWrite':'Read,Glob,Grep,TodoWrite';
     const args=['-p','--output-format','stream-json','--verbose','--include-partial-messages','--tools',allowed,'--permission-mode',allowEdits&&mode==='work'?'acceptEdits':'default'];
     if(media.length)args.push('--input-format','stream-json');
     if(allowed) args.push('--allowedTools',allowed);
@@ -35,8 +40,9 @@ export async function runClaude({prompt,session,cwd,signal,onText,onActivity,mod
       let m;try{m=JSON.parse(line);}catch{return;}
       if(m.type==='stream_event' && !m.parent_tool_use_id && m.event?.delta?.type==='text_delta'){text+=m.event.delta.text;onText(text);}
       if(m.type==='assistant' && !m.parent_tool_use_id) {
-        for(const c of m.message?.content||[]) if(c.type==='tool_use') onActivity(`Using ${c.name}`);
+        for(const c of m.message?.content||[]) if(c.type==='tool_use'){onActivity(`Using ${c.name}`);if(c.name==='TodoWrite')onEvent(claudePlan(c.input?.todos));else onEvent({type:'start',id:c.id,...describeTool(c.name,c.input||{})});}
       }
+      if(m.type==='user'&&!m.parent_tool_use_id)for(const c of m.message?.content||[])if(c.type==='tool_result')onEvent({type:'end',id:c.tool_use_id,ok:!c.is_error});
       if(m.type==='result') result=m;
     });
     child.on('close',code=>{
@@ -50,7 +56,7 @@ export async function runClaude({prompt,session,cwd,signal,onText,onActivity,mod
   });
 }
 
-export async function runCodex({prompt,session,cwd,signal,onText,onActivity,mode,allowEdits,model,effort,media=[]}) {
+export async function runCodex({prompt,session,cwd,signal,onText,onActivity,onEvent=()=>{},mode,allowEdits,model,effort,media=[]}) {
   const command=await requireCommand('codex');
   const child=launch(command,['app-server'],cwd,signal);
   const waiting=new Map();let id=0,stderr='',settled=false,finalResolve,finalReject;
@@ -77,7 +83,10 @@ export async function runCodex({prompt,session,cwd,signal,onText,onActivity,mode
     if(m.method==='thread/tokenUsage/updated')usage=usageOf('codex',p.tokenUsage?.last||{});
     if(m.method==='item/agentMessage/delta') {pendingItems.add(p.itemId);items.set(p.itemId,(items.get(p.itemId)||'')+p.delta);onText([...items.values()].join('\n\n'));}
     if(m.method==='item/completed'&&p.item?.type==='agentMessage'){pendingItems.delete(p.item.id);items.set(p.item.id,p.item.text||items.get(p.item.id)||'');onText([...items.values()].join('\n\n'));if(completedTurn&&!pendingItems.size)finish();}
-    if(m.method==='item/started'&&p.item?.type!=='agentMessage')onActivity(`Working: ${p.item?.type||'task'}`);
+    if(m.method==='item/started'&&p.item?.type!=='agentMessage'){onActivity(`Working: ${p.item?.type||'task'}`);const step=describeCodexItem(p.item);if(step)onEvent({type:'start',id:p.item.id,...step});}
+    if(['item/started','item/completed','item/updated'].includes(m.method)&&['todoList','plan'].includes(p.item?.type))onEvent(codexPlan(p.item.items||p.item.plan));
+    if(m.method==='item/completed'&&p.item&&describeCodexItem(p.item))onEvent({type:'end',id:p.item.id,ok:!['failed','declined'].includes(p.item.status)&&!(typeof p.item.exitCode==='number'&&p.item.exitCode!==0),note:typeof p.item.exitCode==='number'&&p.item.exitCode!==0?'exit '+p.item.exitCode:''});
+    if(m.method==='turn/plan/updated'&&Array.isArray(p.plan))onEvent(codexPlan(p.plan));
     if(m.method==='turn/completed'&&!settled){if(p.turn?.status==='completed'){completedTurn=true;if(pendingItems.size)finishTimer=setTimeout(finish,100);else setImmediate(finish);}else fail(new Error(p.turn?.error?.message||`Codex turn ${p.turn?.status||'failed'}`));}
   });
   try{

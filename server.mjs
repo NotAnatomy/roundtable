@@ -21,6 +21,7 @@ import {pinnedEffort} from './antigravity.mjs';
 import {listCodexModels,listAntigravityModels} from './catalog.mjs';
 import {collectGarbage,removeRoomFiles} from './retention.mjs';
 import {fetchSkillSource} from './skill-fetch.mjs';
+import {createTaskTracker} from './tasks.mjs';
 
 const root=path.dirname(fileURLToPath(import.meta.url));
 const {version}=JSON.parse(await fs.readFile(path.join(root,'package.json'),'utf8'));
@@ -87,17 +88,19 @@ async function runGroup(target,speakers,job,retry=null){
   const session=retry?undefined:typeof stored==='string'?stored:stored?.id,after=retry?null:stored?.through;
   let prompt,fullPrompt,m=retry?.message;
   try{fullPrompt=retry?.request.prompt||makePrompt(target,agent,db.skills);prompt=retry?fullPrompt:makePrompt(target,agent,db.skills,native&&session&&after?{after}:{});}catch(e){message(target,{id:'system',name:'Room'},safeError(e),'error','error');break;}
-  if(!m)m=message(target,agent,'','streaming');else{m.attempts||=[];m.attempts.push({text:m.text,status:m.status,usage:m.usage,time:m.time});m.text='';m.status='streaming';m.kind='message';delete m.usage;}
+  if(!m)m=message(target,agent,'','streaming');else{m.attempts||=[];m.attempts.push({text:m.text,status:m.status,usage:m.usage,time:m.time});m.text='';m.status='streaming';m.kind='message';delete m.usage;delete m.tasks;}
+  const tracker=createTaskTracker();
   const request=retry?.request||{prompt:fullPrompt,agent:structuredClone(agent),mode:target.mode,allowEdits:target.allowEdits,cwd,media:mediaRefs(target)};
   await fs.writeFile(path.join(requestDir,m.id+'.json'),JSON.stringify(request),{mode:0o600});
-  const updates=deltaSender(emit);const update=()=>updates.push({roomId:target.id,id:m.id,text:m.text,activity:job.activity,activeAgent:agent.id});broadcast();
+  const updates=deltaSender(emit);const update=()=>updates.push({roomId:target.id,id:m.id,text:m.text,activity:job.activity,activeAgent:agent.id,tasks:m.tasks||null});broadcast();
+  const onEvent=event=>{tracker.apply(event);const snap=tracker.snapshot();if(snap)m.tasks=snap;update();};
   try{const runner=agent.provider==='codex'?runCodex:agent.provider==='claude'?runClaude:agent.provider==='antigravity'?runAntigravity:runApi;
    const result=await runner({provider:agent.provider,model:agent.model,effort:agent.effort,config:connections[agent.provider],prompt,session,cwd:request.cwd,signal:controller.signal,mode:request.mode,allowEdits:request.allowEdits,media:await mediaFiles.images(retry?request.media:mediaRefs(target,native&&session?after:null)),
-    onText:text=>{m.text=text;update();},onActivity:text=>{job.activity=text;update();}});
-   m.text=result.text;m.status='complete';m.usage=result.usage;updates.flush();await fs.rm(path.join(requestDir,m.id+'.json'),{force:true});
+    onText:text=>{m.text=text;update();},onActivity:text=>{job.activity=text;update();},onEvent});
+   onEvent({type:'finish',ok:true});m.text=result.text;m.status='complete';m.usage=result.usage;updates.flush();await fs.rm(path.join(requestDir,m.id+'.json'),{force:true});
    // Retry uses a fresh native session and cannot advance a later room checkpoint.
    if(result.session&&!retry)target.sessions[key]={id:result.session,through:m.id};await save();broadcast();
-  }catch(e){updates.flush();m.status=controller.signal.aborted?'interrupted':'error';m.kind='error';if(e.usage)m.usage=e.usage;m.text=(m.text?m.text+'\n\n':'')+(controller.signal.aborted?'This reply was interrupted.':safeError(e));delete target.sessions[key];await save();broadcast();if(controller.signal.aborted)break;}
+  }catch(e){onEvent({type:'finish',ok:false});updates.flush();m.status=controller.signal.aborted?'interrupted':'error';m.kind='error';if(e.usage)m.usage=e.usage;m.text=(m.text?m.text+'\n\n':'')+(controller.signal.aborted?'This reply was interrupted.':safeError(e));delete target.sessions[key];await save();broadcast();if(controller.signal.aborted)break;}
  }}catch(e){message(target,{id:'system',name:'Room'},safeError(e),'error','error');}
  finally{clearTimeout(deadline);jobs.delete(target.id);await save();broadcast();}
 }
@@ -237,7 +240,7 @@ const server=http.createServer(async(req,res)=>{
       if(url.pathname==='/api/new')return json(res,400,{error:'Use New room to choose your participants.'});
     }
     if(req.method==='GET'&&pdfAssets.has(url.pathname)){res.setHeader('Content-Type',url.pathname.endsWith('.wasm')?'application/wasm':url.pathname.endsWith('.js')?'text/javascript':'application/octet-stream');res.end(await fs.readFile(pdfAssets.get(url.pathname)));return;}
-    const assets={'/':'index.html','/app.js':'app.js','/client-state.mjs':'client-state.mjs','/avatar.mjs':'avatar.mjs','/dictation.mjs':'dictation.mjs','/backdrop.mjs':'backdrop.mjs','/attachments.mjs':'attachments.mjs','/vendor/pdf.min.mjs':'vendor/pdf.min.mjs','/vendor/pdf.worker.min.mjs':'vendor/pdf.worker.min.mjs','/style.css':'style.css','/markdown.mjs':'markdown.mjs','/vendor/marked.mjs':'vendor/marked.mjs'};const file=assets[url.pathname];
+    const assets={'/':'index.html','/app.js':'app.js','/client-state.mjs':'client-state.mjs','/avatar.mjs':'avatar.mjs','/dictation.mjs':'dictation.mjs','/backdrop.mjs':'backdrop.mjs','/tasklist.mjs':'tasklist.mjs','/attachments.mjs':'attachments.mjs','/vendor/pdf.min.mjs':'vendor/pdf.min.mjs','/vendor/pdf.worker.min.mjs':'vendor/pdf.worker.min.mjs','/style.css':'style.css','/markdown.mjs':'markdown.mjs','/vendor/marked.mjs':'vendor/marked.mjs'};const file=assets[url.pathname];
     if(req.method==='GET'&&file){res.setHeader('Content-Type',/\.m?js$/.test(file)?'text/javascript':file.endsWith('.css')?'text/css':'text/html');res.end(await fs.readFile(path.join(root,'public',file)));return;}
     json(res,404,{error:'Not found'});
   }catch(e){json(res,400,{error:safeError(e),...(e.details?{details:e.details}:{})});}finally{if(ownsMutation)mutating=false;}

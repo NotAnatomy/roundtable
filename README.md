@@ -1,4 +1,4 @@
-# Roundtable 0.6.0
+# Roundtable 0.7.0
 
 A local group chat with one to four agents. You send a message, each selected agent replies once in order, then the room stops until you send another message. Later speakers see earlier replies. No autonomous continuation button or background conversation loop.
 
@@ -86,6 +86,10 @@ The conversation now renders Markdown lists, emphasis, headings, tables, links a
 The interface now has a room search, a context sidebar, readable mention labels and a composer plus menu. Use + to attach images, PDFs, text/code, open Skills, add an agent or edit notes. Drafts and pending file references survive room switches and page reloads using browser localStorage. Clearing browser storage removes these drafts.
 
 Agent avatars are generated inline SVG marks derived from each agent ID, tinted by provider, so the same agent looks the same in every room and no image is loaded. The ring turns slowly only while that agent is replying and is desaturated when its last reply failed or was interrupted; both respect the reduced motion setting. macOS system dictation also works in the composer; set its shortcut in System Settings, Keyboard, Dictation.
+
+## Task list
+
+While a native agent works, its reply shows a task card and the right rail shows Working now. Rows come from what the CLI actually reports: each Claude tool call (Read, Grep, Edit, and so on) and each Codex command or file change becomes a step that ticks when its result arrives. When the agent publishes a plan (Claude's TodoWrite, which is allowed in Work mode because it touches no files, or Codex's plan updates), the plan becomes the top level and tool calls nest under the step in progress. Counts are derived from the rows. The card stays open while the reply is live, folds to a step count on completion, and is kept with the message so history shows what was done. Tool steps settle when the turn ends; plan steps keep the status the agent last reported. Lists are bounded to 40 steps and 6 nested calls per step, with an "earlier steps" note when older rows are dropped. API agents have no tools, so they show no card.
 
 ## Voice
 
