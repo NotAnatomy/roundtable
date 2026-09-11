@@ -63,3 +63,34 @@ export async function runApi({provider,prompt,model,effort,signal,onText,config,
  if(!text)throw new Error('The provider returned no chat text. Check the selected model and API format.');
  onText(text);return {text,usage:usageOf(provider,d)};
 }
+
+// Voice uses the saved Gemini key: speech in through audio understanding, speech out through a Gemini TTS model.
+export const VOICE_DEFAULTS={dictationModel:'gemini-2.5-flash',voiceModel:'gemini-2.5-flash-preview-tts',voiceName:'Kore'};
+export const VOICE_NAMES=['Zephyr','Puck','Charon','Kore','Fenrir','Leda','Orus','Aoede','Callirrhoe','Autonoe','Enceladus','Iapetus','Umbriel','Algieba','Despina','Erinome','Algenib','Rasalgethi','Laomedeia','Achernar','Alnilam','Schedar','Gacrux','Pulcherrima','Achird','Zubenelgenubi','Vindemiatrix','Sadachbia','Sadaltager','Sulafat'];
+const googleUrl=(model,config)=>`${GOOGLE}/models/${encodeURIComponent(model.replace(/^models\//,''))}:generateContent`;
+export async function transcribeAudio({config,mime,data,language='',fetcher=fetch,signal}){
+ if(!config?.key)throw new Error('Connect Google Gemini in Connections to dictate.');
+ const model=config.dictationModel||VOICE_DEFAULTS.dictationModel;
+ const body={contents:[{role:'user',parts:[{text:'Transcribe the speech in this audio verbatim'+(language?` (spoken language: ${language})`:'')+'. Keep the original language, add sentence punctuation, and return only the transcript with no commentary. If there is no speech, return an empty response.'},{inlineData:{mimeType:mime,data}}]}],generationConfig:{temperature:0,maxOutputTokens:2048}};
+ const res=await request(googleUrl(model,config),{method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':config.key},body:JSON.stringify(body),signal},config.key,fetcher),d=await res.json();
+ const text=d.candidates?.[0]?.content?.parts?.filter(p=>p.text&&!p.thought).map(p=>p.text).join('')||'';
+ if(!text&&d.promptFeedback?.blockReason)throw new Error('Google declined to transcribe this audio: '+d.promptFeedback.blockReason);
+ return {text:text.trim(),usage:usageOf('google',d)};
+}
+export function pcmToWav(pcm,{rate=24000,channels=1,bits=16}={}){
+ const header=Buffer.alloc(44),byteRate=rate*channels*bits/8;
+ header.write('RIFF',0);header.writeUInt32LE(36+pcm.length,4);header.write('WAVE',8);header.write('fmt ',12);header.writeUInt32LE(16,16);header.writeUInt16LE(1,20);header.writeUInt16LE(channels,22);header.writeUInt32LE(rate,24);header.writeUInt32LE(byteRate,28);header.writeUInt16LE(channels*bits/8,32);header.writeUInt16LE(bits,34);header.write('data',36);header.writeUInt32LE(pcm.length,40);
+ return Buffer.concat([header,pcm]);
+}
+export function speakableText(text){return text.replace(/```[\s\S]*?```/g,' Code block omitted. ').replace(/`([^`]+)`/g,'$1').replace(/^#{1,6}\s+/gm,'').replace(/\*\*|__/g,'').replace(/\|/g,' ').replace(/\s+/g,' ').trim().slice(0,4000);}
+export async function synthesizeSpeech({config,text,fetcher=fetch,signal}){
+ if(!config?.key)throw new Error('Connect Google Gemini in Connections to use voice.');
+ const model=config.voiceModel||VOICE_DEFAULTS.voiceModel,voiceName=config.voiceName||VOICE_DEFAULTS.voiceName;
+ const body={contents:[{role:'user',parts:[{text}]}],generationConfig:{responseModalities:['AUDIO'],speechConfig:{voiceConfig:{prebuiltVoiceConfig:{voiceName}}}}};
+ const res=await request(googleUrl(model,config),{method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':config.key},body:JSON.stringify(body),signal},config.key,fetcher),d=await res.json();
+ const part=d.candidates?.[0]?.content?.parts?.find(p=>p.inlineData?.data);
+ if(!part)throw new Error('Google returned no audio: '+(d.promptFeedback?.blockReason||d.candidates?.[0]?.finishReason||'empty response')+'. Check that the voice model supports audio output.');
+ const rate=Number(/rate=(\d+)/.exec(part.inlineData.mimeType||'')?.[1]||24000);
+ const wav=/wav/i.test(part.inlineData.mimeType||'')?Buffer.from(part.inlineData.data,'base64'):pcmToWav(Buffer.from(part.inlineData.data,'base64'),{rate});
+ return {wav,usage:usageOf('google',d)};
+}

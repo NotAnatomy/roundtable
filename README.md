@@ -1,4 +1,4 @@
-# Roundtable 0.5.0
+# Roundtable 0.6.0
 
 A local group chat with one to four agents. You send a message, each selected agent replies once in order, then the room stops until you send another message. Later speakers see earlier replies. No autonomous continuation button or background conversation loop.
 
@@ -23,7 +23,7 @@ Each CLI participant has a separate native session. The first native turn includ
 
 ## Archive and delete rooms
 
-Room settings ends with Room actions. Archive keeps every message, drops the room’s native CLI sessions and moves it into a collapsed Archived section at the bottom of the room list. Archived rooms do not count toward the 50 active room limit. Open one to read it; Unarchive to continue, at which point agents start fresh sessions. Delete asks you to type the room name, offers an export first, then removes the room, its retry context and any uploaded file that no other room references. Both actions are refused while that room is replying. If the last active room is archived or deleted, an empty room is created so the app always has one.
+Hover a room in the list and use its ⋯ menu to archive, export or delete it. Room settings also ends with Room actions. Archive keeps every message, drops the room’s native CLI sessions and moves it into a collapsed Archived section at the bottom of the room list. Archived rooms do not count toward the 50 active room limit. Open one to read it; Unarchive to continue, at which point agents start fresh sessions. Delete asks you to type the room name, offers an export first, then removes the room, its retry context and any uploaded file that no other room references. Both actions are refused while that room is replying. If the last active room is archived or deleted, an empty room is created so the app always has one.
 
 ## Connections
 
@@ -85,7 +85,15 @@ The conversation now renders Markdown lists, emphasis, headings, tables, links a
 
 The interface now has a room search, a context sidebar, readable mention labels and a composer plus menu. Use + to attach images, PDFs, text/code, open Skills, add an agent or edit notes. Drafts and pending file references survive room switches and page reloads using browser localStorage. Clearing browser storage removes these drafts.
 
-Agent avatars are generated inline SVG marks derived from each agent ID, tinted by provider, so the same agent looks the same in every room and no image is loaded. The ring turns slowly only while that agent is replying and is desaturated when its last reply failed or was interrupted; both respect the reduced motion setting. macOS system dictation works in the composer; set its shortcut in System Settings, Keyboard, Dictation. Roundtable does not add its own speech recognition.
+Agent avatars are generated inline SVG marks derived from each agent ID, tinted by provider, so the same agent looks the same in every room and no image is loaded. The ring turns slowly only while that agent is replying and is desaturated when its last reply failed or was interrupted; both respect the reduced motion setting. macOS system dictation also works in the composer; set its shortcut in System Settings, Keyboard, Dictation.
+
+## Voice
+
+The mic button in the composer (or Command+Shift+M) records up to 60 seconds locally as 16 kHz WAV, then sends the recording to Gemini with your saved Google key for transcription. The transcript is inserted at the cursor as editable text and is never sent as a message on its own. Listen on a completed reply asks a Gemini TTS model to read it aloud; code blocks are skipped and long replies are read up to 4,000 characters. Both features need a Google Gemini key in Connections, where you can change the dictation model (default gemini-2.5-flash), the voice model (default gemini-2.5-flash-preview-tts) and one of the prebuilt voices. Audio and text go to Google's API host only; Roundtable stores neither. The button is hidden when the browser has no microphone API and explains itself when Google is not connected. These paths have protocol tests with mocked responses; they were not exercised against a live Google account in this build.
+
+## Appearance
+
+Preferences in the sidebar toggles an animated background: a WebGL shader with three slow, low-contrast lobes and faint grain behind the conversation, rendered at most 640 pixels wide at 30 frames per second, paused while the tab is hidden and held still when the system asks for reduced motion. The preference is saved in the browser. Without WebGL the background stays flat.
 
 Skills lets you create, edit, delete or import reusable instructions from Markdown. Assign them in individual agent settings. These are instruction skills, not executable native packages: referenced scripts, assets and permissions are not installed. Deleting a skill also removes its assignments.
 

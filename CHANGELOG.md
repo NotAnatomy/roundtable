@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.0
+
+### Added
+
+- Per-room ⋯ menu in the sidebar with Archive, Export and Delete.
+- Dictation: a mic button records locally as WAV and transcribes through the saved Gemini key; the transcript lands in the composer as editable text. Command+Shift+M toggles it.
+- Listen: completed replies can be read aloud by a Gemini TTS model with a selectable voice.
+- Voice settings (dictation model, voice model, voice) in the Google connection form.
+- Preferences dialog with an animated WebGL background that can be switched off; still under reduced motion, paused when hidden.
+
 ## 0.5.0
 
 ### Added

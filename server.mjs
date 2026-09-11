@@ -14,7 +14,7 @@ import {defaultAgents,selectSpeakers,routeSpeakers,makePrompt,budget} from './ro
 import {runClaude,runCodex} from './providers.mjs';
 import {resolveCommand} from './commands.mjs';
 import {openStore,newRoom} from './store.mjs';
-import {runApi,listApiModels,routerBase} from './api-providers.mjs';
+import {runApi,listApiModels,routerBase,transcribeAudio,synthesizeSpeech,speakableText,VOICE_DEFAULTS,VOICE_NAMES} from './api-providers.mjs';
 import {runAntigravity} from './antigravity.mjs';
 import {validateSkill,validateAttachments,messageSize} from './skill-library.mjs';
 import {pinnedEffort} from './antigravity.mjs';
@@ -34,11 +34,12 @@ try{connections=JSON.parse(await fs.readFile(keyFile,'utf8'));}catch(e){if(e.cod
 const token=randomBytes(32).toString('hex'),launchSecret=randomBytes(32).toString('hex');
 const clients=new Set(),jobs=new Map();let mutating=false;
 const equal=(a,b)=>typeof a==='string'&&Buffer.byteLength(a)===Buffer.byteLength(b)&&timingSafeEqual(Buffer.from(a),Buffer.from(b));
-const snapshot=()=>{const {sessions,...publicRoom}=room,active=jobs.get(room.id);return {...publicRoom,busy:!!active,activeAgent:active?.agent||null,activity:active?.activity||'',capacity:budget(room),usage:totalUsage(room.messages),rooms:db.rooms.map(r=>({id:r.id,title:r.title,agents:r.agents.length,count:r.messages.length,busy:jobs.has(r.id),archived:!!r.archived})),skills:db.skills,version};};
+const snapshot=()=>{const {sessions,...publicRoom}=room,active=jobs.get(room.id);return {...publicRoom,busy:!!active,activeAgent:active?.agent||null,activity:active?.activity||'',capacity:budget(room),usage:totalUsage(room.messages),rooms:db.rooms.map(r=>({id:r.id,title:r.title,agents:r.agents.length,count:r.messages.length,busy:jobs.has(r.id),archived:!!r.archived})),skills:db.skills,voice:voiceInfo(),version};};
 function emit(event,data){const content=frame(event,data);for(const res of clients){if(res.writableLength>1024*1024){res.end();clients.delete(res);}else res.write(content);}}
 function broadcast(){emit('state',snapshot());}
 const safeError=e=>Object.values(connections).reduce((t,c)=>c.key?t.split(c.key).join('[redacted]'):t,String(e?.message||e));
-const connectionInfo=()=>Object.fromEntries(['google','agentrouter'].map(p=>[p,{configured:!!connections[p]?.key,baseURL:connections[p]?.baseURL||'',protocol:connections[p]?.protocol||'openai'}]));
+const connectionInfo=()=>Object.fromEntries(['google','agentrouter'].map(p=>[p,{configured:!!connections[p]?.key,baseURL:connections[p]?.baseURL||'',protocol:connections[p]?.protocol||'openai',...(p==='google'?{dictationModel:connections.google?.dictationModel||VOICE_DEFAULTS.dictationModel,voiceModel:connections.google?.voiceModel||VOICE_DEFAULTS.voiceModel,voiceName:connections.google?.voiceName||VOICE_DEFAULTS.voiceName,voices:VOICE_NAMES}:{})}]));
+const voiceInfo=()=>({ready:!!connections.google?.key});
 async function validateSettings(input){
  if(typeof input.title!=='string'||!input.title.trim()||input.title.length>80)throw new Error('Give this room a name under 80 characters.');
  if(!['lounge','work'].includes(input.mode))throw new Error('Choose Lounge or Work.');
@@ -133,10 +134,21 @@ const server=http.createServer(async(req,res)=>{
       return json(res,200,{models});
     }
     if(req.method==='POST'){
-      const input=await body(req,url.pathname==='/api/uploads'?24*1024*1024:250000);
+      const input=await body(req,url.pathname==='/api/uploads'?24*1024*1024:url.pathname==='/api/dictate'?6*1024*1024:250000);
       const target=input.roomId?db.rooms.find(r=>r.id===input.roomId):room;if(!target)throw new Error('Room not found.');
       if(url.pathname==='/api/stop'){jobs.get(target.id)?.controller.abort();return json(res,200,{ok:true});}
       if(url.pathname==='/api/uploads')return json(res,200,await mediaFiles.upload(input));
+      if(url.pathname==='/api/dictate'){
+        if(input.mime!=='audio/wav'||typeof input.data!=='string'||input.data.length>4*1024*1024||input.data.length%4!==0||/[^A-Za-z0-9+/=]/.test(input.data))throw new Error('Send a WAV recording under 3 MB.');
+        if(Buffer.from(input.data,'base64').subarray(0,4).toString()!=='RIFF')throw new Error('The recording is not a WAV file.');
+        const language=typeof input.language==='string'?input.language.slice(0,40).replace(/[^\w -]/g,''):'';
+        const result=await transcribeAudio({config:connections.google,mime:'audio/wav',data:input.data,language,signal:AbortSignal.timeout(60000)});return json(res,200,{ok:true,text:result.text,usage:result.usage});
+      }
+      if(url.pathname==='/api/speak'){
+        const m=target.messages.find(m=>m.id===input.id&&m.status==='complete'&&m.kind!=='error');if(!m)throw new Error('Only completed replies can be read aloud.');
+        const text=speakableText(m.text);if(!text)throw new Error('There is no readable text in this reply.');
+        const result=await synthesizeSpeech({config:connections.google,text,signal:AbortSignal.timeout(90000)});res.writeHead(200,{'Content-Type':'audio/wav','Cache-Control':'no-store','X-Roundtable-Truncated':String(m.text.length>4000)});res.end(result.wav);return;
+      }
       if(url.pathname==='/api/skills/fetch'){if(typeof input.url!=='string'||input.url.length>2000)throw new Error('Paste a GitHub link.');return json(res,200,await fetchSkillSource(input.url));}
       if(url.pathname==='/api/connections/test'){if(!['google','agentrouter'].includes(input.provider)||typeof input.model!=='string'||!input.model.trim())throw new Error('Choose a model to test.');const result=await runApi({provider:input.provider,config:connections[input.provider],model:input.model.trim(),effort:'auto',prompt:'Reply with OK.',signal:AbortSignal.timeout(30000),onText:()=>{},maxOutputTokens:16});return json(res,200,{ok:true,message:'The provider returned text for this model.',sample:result.text.slice(0,200)});}
       if(mutating)return json(res,409,{error:'Another change is being saved. Try again.'});
@@ -151,6 +163,7 @@ const server=http.createServer(async(req,res)=>{
           if(!key||key.length>4096||/[\r\n]/.test(key))throw new Error('Enter a valid API key.');
           const config={key};
           if(input.provider==='agentrouter'){config.baseURL=routerBase(input.baseURL);config.protocol=input.protocol==='anthropic'?'anthropic':'openai';}
+          if(input.provider==='google'){for(const field of ['dictationModel','voiceModel']){const value=typeof input[field]==='string'?input[field].trim():'';if(value&&(value.length>200||value.startsWith('-')||/[^a-zA-Z0-9_./:@+-]/.test(value)))throw new Error('Enter a valid Gemini model ID for voice.');if(value&&value!==VOICE_DEFAULTS[field])config[field]=value;}const voice=typeof input.voiceName==='string'?input.voiceName.trim():'';if(voice&&!VOICE_NAMES.includes(voice))throw new Error('Choose one of the listed Gemini voices.');if(voice&&voice!==VOICE_DEFAULTS.voiceName)config.voiceName=voice;}
           connections[input.provider]=config;
         }
         await fs.writeFile(keyFile+'.tmp',JSON.stringify(connections),{mode:0o600});await fs.rename(keyFile+'.tmp',keyFile);return json(res,200,connectionInfo());
@@ -224,7 +237,7 @@ const server=http.createServer(async(req,res)=>{
       if(url.pathname==='/api/new')return json(res,400,{error:'Use New room to choose your participants.'});
     }
     if(req.method==='GET'&&pdfAssets.has(url.pathname)){res.setHeader('Content-Type',url.pathname.endsWith('.wasm')?'application/wasm':url.pathname.endsWith('.js')?'text/javascript':'application/octet-stream');res.end(await fs.readFile(pdfAssets.get(url.pathname)));return;}
-    const assets={'/':'index.html','/app.js':'app.js','/client-state.mjs':'client-state.mjs','/avatar.mjs':'avatar.mjs','/attachments.mjs':'attachments.mjs','/vendor/pdf.min.mjs':'vendor/pdf.min.mjs','/vendor/pdf.worker.min.mjs':'vendor/pdf.worker.min.mjs','/style.css':'style.css','/markdown.mjs':'markdown.mjs','/vendor/marked.mjs':'vendor/marked.mjs'};const file=assets[url.pathname];
+    const assets={'/':'index.html','/app.js':'app.js','/client-state.mjs':'client-state.mjs','/avatar.mjs':'avatar.mjs','/dictation.mjs':'dictation.mjs','/backdrop.mjs':'backdrop.mjs','/attachments.mjs':'attachments.mjs','/vendor/pdf.min.mjs':'vendor/pdf.min.mjs','/vendor/pdf.worker.min.mjs':'vendor/pdf.worker.min.mjs','/style.css':'style.css','/markdown.mjs':'markdown.mjs','/vendor/marked.mjs':'vendor/marked.mjs'};const file=assets[url.pathname];
     if(req.method==='GET'&&file){res.setHeader('Content-Type',/\.m?js$/.test(file)?'text/javascript':file.endsWith('.css')?'text/css':'text/html');res.end(await fs.readFile(path.join(root,'public',file)));return;}
     json(res,404,{error:'Not found'});
   }catch(e){json(res,400,{error:safeError(e),...(e.details?{details:e.details}:{})});}finally{if(ownsMutation)mutating=false;}
