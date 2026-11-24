@@ -1,6 +1,6 @@
-# Roundtable 0.8.0 verification
+# Roundtable 0.9.0 verification
 
-`npm test`: 49 passed, 0 failed. Tests make no paid model calls and no live GitHub calls.
+`npm test`: 60 passed, 0 failed. Tests make no paid model calls and no live GitHub calls.
 
 Coverage includes:
 
@@ -18,6 +18,8 @@ Coverage includes:
 - A shared notes edit between turns keeps the incremental native prompt instead of resending the transcript.
 - Decoded media bytes per request are bounded independently of page count.
 - Generated avatars are deterministic per agent ID, differ between agents, build only SVG namespace elements and contain no image or external reference.
+- Routines: schedule validation including the 15 minute floor, local wall-clock next-run maths across a day boundary and a Friday-to-Monday weekday filter, due selection, every blocked-run reason, and the self-pause after three runs that could not start. On the real server a test run added the routine's message plus one reply from each participant, the message carried its routine label and the replies did not, and a room switched to allowing project edits refused the run.
+- Secrets: reserved names covering every stripped provider variable plus the process-loading variables, the value length floor, duplicate names, and redaction including overlapping values and values below the floor. On the real server the value reached the agent's process environment, did not appear in its prompt, was redacted from its reply, and was absent from the state sent to the browser and from `rooms.json`; the name and description did reach the prompt; deleting the secret removed it from the room and from its file.
 - Agent characters: silhouette geometry closes and stays inside the 32px box for every shape, markup is deterministic per agent at a fixed gradient id and differs between agents, no element references anything external, and the lifecycle mapping covers idle, thinking, working, streaming, done, failed and sleeping.
 - Command palette ranking (prefix over word start over subsequence, hint hits below title hits, stable order on ties) and find-in-conversation ranges (non-overlapping, case-insensitive, empty and null inputs).
 - Unread counts (open room excluded, never negative after a reset, unopened rooms start read, damaged storage ignored) and background-room completion detection.
@@ -29,6 +31,8 @@ Coverage includes:
 Additional local check: PDF.js extracted known text and rasterized a real one-page PDF containing text and graphics. The check used the runtime's installed canvas library, not an application dependency. It caught missing modern-engine functionality; the bundled PDF.js legacy compatibility build resolved it.
 
 0.5.0 was also exercised in a local browser against a scratch data directory: the generated avatars rendered in the roster, Import from URL listed 20 skills from the public anthropics/skills repository in two GitHub API requests, the docx skill preview showed the scripts/ limitation with nine flagged lines and saved with that note, archive moved the room into the Archived section and created a replacement, the delete button stayed disabled until the exact title was typed, and delete closed both dialogs with no console errors at 1440px and 375px widths. Pressing Enter in the URL field was not exercised by the automation; the Fetch button was.
+
+0.9.0 browser check: a routine was created through the form (schedule fields swapped correctly between daily, repeating and once), saved, listed with its next run, and its Test run put a message labelled with the routine into the transcript, after which each participant replied once and the room stopped. Upcoming appeared in the room details panel. A secret was saved through the dialog, appeared by name in the room assignment picker, and the bootstrap state fetched from the page did not contain its value. No console errors.
 
 0.8.0 browser check with a slow Claude fixture at 1440x900: characters rendered and animated per state in the transcript and roster, the command palette opened on ⌘K and filtered to skills on "skil", find in conversation reported "1 of 2" and flashed its match, the shortcuts sheet opened on ⌘/, ⌘B collapsed the room list to a full-width conversation, and a background room showed an unread count of 2 after replying. The Preferences notification note correctly reported that this browser blocks notifications. One defect was found and fixed during the check: the character's blink offset was an inline style attribute, which the page's own `style-src 'self'` policy blocks, so it became a class. A second was found and fixed: collapsing the room list with `display:none` moved every later pane into the wrong grid column.
 

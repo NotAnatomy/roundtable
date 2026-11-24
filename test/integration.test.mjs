@@ -16,7 +16,7 @@ if(process.argv.includes('app-server')){
  if(m.method==='thread/start'||m.method==='thread/resume'){if(!['read-only','workspace-write'].includes(m.params.sandbox)){out({id:m.id,error:{code:-32600,message:'Invalid sandbox enum'}});return;}out({id:m.id,result:{thread:{id:'test-thread'}}});}
  if(m.method==='turn/start'){if(!['readOnly','workspaceWrite'].includes(m.params.sandboxPolicy?.type)||m.params.sandboxPolicy.networkAccess!==false){out({id:m.id,error:{code:-32600,message:'Invalid turn policy'}});return;}fs.appendFileSync(process.env.PROMPT_LOG,JSON.stringify({provider:'codex',prompt:m.params.input[0].text})+'\\n');out({id:m.id,result:{turn:{id:'turn'}}});out({method:'item/started',params:{item:{id:'cmd1',type:'commandExecution',command:['ls','-la']}}});out({method:'item/started',params:{item:{id:'r1',type:'reasoning'}}});out({method:'item/completed',params:{item:{id:'cmd1',type:'commandExecution',status:'completed',exitCode:0}}});out({method:'item/agentMessage/delta',params:{itemId:'a',delta:'Codex suggests'}});out({method:'thread/tokenUsage/updated',params:{tokenUsage:{last:{inputTokens:30,outputTokens:7}}}});out({method:'turn/completed',params:{turn:{status:'completed'}}});out({method:'item/completed',params:{item:{type:'agentMessage',id:'a',text:'Codex suggests a shared notebook.'}}});}
  });
-}else{let prompt='';process.stdin.on('data',b=>prompt+=b);process.stdin.on('end',()=>{fs.appendFileSync(process.env.PROMPT_LOG,JSON.stringify({provider:'claude',prompt})+'\\n');if(prompt.includes('PLAN_STEPS')){const out=x=>console.log(JSON.stringify(x));out({type:'assistant',message:{content:[{type:'tool_use',id:'t0',name:'TodoWrite',input:{todos:[{content:'Inspect files',status:'in_progress',activeForm:'Inspecting files'},{content:'Report',status:'pending'}]}}]}});out({type:'assistant',message:{content:[{type:'tool_use',id:'t1',name:'Read',input:{file_path:'/proj/app/main.js'}}]}});out({type:'user',message:{content:[{type:'tool_result',tool_use_id:'t1'}]}});out({type:'assistant',message:{content:[{type:'tool_use',id:'t2',name:'TodoWrite',input:{todos:[{content:'Inspect files',status:'completed'},{content:'Report',status:'in_progress',activeForm:'Reporting'}]}}]}});}const reply={type:'result',usage:{input_tokens:20,output_tokens:6},total_cost_usd:0.001,result:'Claude builds on the shared notebook.',session_id:'claude-test'};if(prompt.includes('FAIL_ONCE')&&!fs.existsSync(process.env.PROMPT_LOG+'.failed')){fs.writeFileSync(process.env.PROMPT_LOG+'.failed','1');reply.is_error=true;reply.result='Fixture failure';}const history=prompt.split('\\n').map(line=>{try{return JSON.parse(line);}catch{return null;}}).findLast(Array.isArray)||[];if(history.findLast(m=>!m.agentId)?.text.includes('WAIT_FOR_STOP'))setTimeout(()=>console.log(JSON.stringify(reply)),30000);else console.log(JSON.stringify(reply));});}
+}else{let prompt='';process.stdin.on('data',b=>prompt+=b);process.stdin.on('end',()=>{fs.appendFileSync(process.env.PROMPT_LOG,JSON.stringify({provider:'claude',prompt,deployToken:process.env.DEPLOY_TOKEN||null,stripped:process.env.ANTHROPIC_API_KEY||null})+'\\n');if(prompt.includes('PLAN_STEPS')){const out=x=>console.log(JSON.stringify(x));out({type:'assistant',message:{content:[{type:'tool_use',id:'t0',name:'TodoWrite',input:{todos:[{content:'Inspect files',status:'in_progress',activeForm:'Inspecting files'},{content:'Report',status:'pending'}]}}]}});out({type:'assistant',message:{content:[{type:'tool_use',id:'t1',name:'Read',input:{file_path:'/proj/app/main.js'}}]}});out({type:'user',message:{content:[{type:'tool_result',tool_use_id:'t1'}]}});out({type:'assistant',message:{content:[{type:'tool_use',id:'t2',name:'TodoWrite',input:{todos:[{content:'Inspect files',status:'completed'},{content:'Report',status:'in_progress',activeForm:'Reporting'}]}}]}});}const reply={type:'result',usage:{input_tokens:20,output_tokens:6},total_cost_usd:0.001,result:process.env.DEPLOY_TOKEN&&prompt.includes('ECHO_SECRET')?('token is '+process.env.DEPLOY_TOKEN):'Claude builds on the shared notebook.',session_id:'claude-test'};if(prompt.includes('FAIL_ONCE')&&!fs.existsSync(process.env.PROMPT_LOG+'.failed')){fs.writeFileSync(process.env.PROMPT_LOG+'.failed','1');reply.is_error=true;reply.result='Fixture failure';}const history=prompt.split('\\n').map(line=>{try{return JSON.parse(line);}catch{return null;}}).findLast(Array.isArray)||[];if(history.findLast(m=>!m.agentId)?.text.includes('WAIT_FOR_STOP'))setTimeout(()=>console.log(JSON.stringify(reply)),30000);else console.log(JSON.stringify(reply));});}
 `;
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
 test('real server with protocol fixtures: handoffs, one reply per user message, persistence, pause, CSRF',async()=>{
@@ -113,6 +113,58 @@ test('real server with protocol fixtures: handoffs, one reply per user message, 
   s=(await fetch(base+'/api/bootstrap',{headers}).then(r=>r.json())).state;assert.equal(s.rooms.length,1);assert.equal(s.messages.length,0);assert.equal(s.archived,false);
   assert.deepEqual(await fs.readdir(path.join(data,'uploads')),[]);
   assert.equal((await post('message',{text:'Fresh start',target:'all'})).status,200);await settle();assert.equal(s.messages.length,3);
+  // Secrets: the value reaches the agent's process, never its prompt, and is removed from its reply.
+  const SECRET='deploy-token-abcdef123456';
+  assert.equal((await post('secrets/save',{name:'ANTHROPIC_API_KEY',description:'nope',value:SECRET})).status,400);
+  assert.equal((await post('secrets/save',{name:'bad name',description:'nope',value:SECRET})).status,400);
+  assert.equal((await post('secrets/save',{name:'deploy_token',description:'Publishes the docs site',value:SECRET})).status,200);
+  let afterSecret=(await fetch(base+'/api/bootstrap',{headers}).then(r=>r.json())).state;
+  const secretId=afterSecret.secrets.find(x=>x.name==='DEPLOY_TOKEN').id;
+  // The browser is never told the value, and it is not written into rooms.json.
+  assert.ok(!JSON.stringify(afterSecret).includes(SECRET));
+  assert.ok(!(await fs.readFile(path.join(data,'rooms.json'),'utf8')).includes(SECRET));
+  assert.ok(JSON.parse(await fs.readFile(path.join(data,'secrets.json'),'utf8'))[secretId]===SECRET);
+  assert.equal((await post('secrets/assign',{secretIds:[secretId]})).status,200);
+  assert.equal((await post('message',{text:'@claude ECHO_SECRET please',target:'claude'})).status,200);await settle();
+  const echoed=(await fs.readFile(path.join(dir,'prompts'),'utf8')).trim().split('\n').map(JSON.parse).at(-1);
+  assert.equal(echoed.deployToken,SECRET,'the secret should reach the process environment');
+  assert.equal(echoed.stripped,null,'provider variables stay stripped');
+  assert.ok(!echoed.prompt.includes(SECRET),'the secret must not be in the prompt');
+  assert.match(echoed.prompt,/DEPLOY_TOKEN/);assert.match(echoed.prompt,/Publishes the docs site/);
+  const reply=s.messages.at(-1);
+  assert.ok(!reply.text.includes(SECRET),'an echoed secret must be redacted from the reply');
+  assert.match(reply.text,/\[secret redacted\]/);
+  assert.ok(!(await fs.readFile(path.join(data,'rooms.json'),'utf8')).includes(SECRET));
+  assert.equal((await post('secrets/delete',{id:secretId})).status,200);
+  assert.deepEqual((await disk()).rooms.find(r=>r.id===s.id).secretIds,[]);
+  assert.equal(JSON.parse(await fs.readFile(path.join(data,'secrets.json'),'utf8'))[secretId],undefined);
+
+  // Routines: refused where nobody could approve a change, and a run starts one normal turn.
+  const roomId=s.id;
+  assert.equal((await post('routines/save',{title:'Standup',instruction:'What changed?',roomId,target:'all',schedule:{kind:'every',minutes:5}})).status,400);
+  assert.equal((await post('routines/save',{title:'Standup',instruction:'What changed?',roomId,target:'all',schedule:{kind:'daily',time:'09:00',days:'weekday'}})).status,200);
+  let withRoutine=(await fetch(base+'/api/bootstrap',{headers}).then(r=>r.json())).state;
+  const routine=withRoutine.routines[0];
+  assert.equal(routine.scheduleText,'Weekdays at 09:00');assert.ok(routine.nextRun>Date.now());
+  const beforeRun=s.messages.length,enabled=s.agents.filter(a=>a.enabled).length;
+  assert.equal((await post('routines/run',{id:routine.id})).status,200);await settle();
+  assert.equal(s.messages.length,beforeRun+1+enabled,'a routine run adds its message and one reply from each participant');
+  assert.equal(s.messages.at(-1-enabled).text,'What changed?');
+  assert.deepEqual(s.messages.at(-1-enabled).routine,{id:routine.id,title:'Standup'});
+  assert.ok(s.messages.slice(-enabled).every(m=>m.agentId&&!m.routine),'only the injected message carries the routine label');
+  // Turning on project edits makes the room ineligible, and the run says so rather than proceeding.
+  const project=await fs.mkdtemp(path.join(os.homedir(),'rt-routine-'));
+  const settingsWithEdits={...s,workspace:project,mode:'work',allowEdits:true};
+  assert.equal((await post('settings',settingsWithEdits)).status,200);
+  const blocked=await post('routines/run',{id:routine.id});
+  assert.equal(blocked.status,400);assert.match((await blocked.json()).error,/project edits/);
+  assert.equal((await post('settings',{...settingsWithEdits,mode:'lounge',allowEdits:false})).status,200);
+  await fs.rm(project,{recursive:true,force:true});
+  assert.equal((await post('routines/toggle',{id:routine.id})).status,200);
+  assert.equal((await fetch(base+'/api/bootstrap',{headers}).then(r=>r.json())).state.routines[0].enabled,false);
+  assert.equal((await post('routines/delete',{id:routine.id})).status,200);
+  assert.deepEqual((await fetch(base+'/api/bootstrap',{headers}).then(r=>r.json())).state.routines,[]);
+
   assert.equal((await post('message',{text:'@claude PLAN_STEPS please',target:'claude'})).status,200);await settle();
   const planned=s.messages.at(-1).tasks;assert.equal(planned.tasks.length,2);assert.equal(planned.tasks[0].label,'Inspect files');assert.equal(planned.tasks[0].status,'done');assert.deepEqual(planned.tasks[0].children,[{id:'t1',label:'Read app/main.js',status:'done'}]);assert.equal(planned.tasks[1].label,'Reporting');assert.equal(planned.tasks[1].status,'running');
   assert.equal(JSON.parse(await fs.readFile(path.join(data,'rooms.json'),'utf8')).rooms[0].messages.at(-1).tasks.tasks.length,2);

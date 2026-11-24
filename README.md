@@ -1,6 +1,6 @@
-# Roundtable 0.8.0
+# Roundtable 0.9.0
 
-A local group chat with one to four agents. You send a message, each selected agent replies once in order, then the room stops until you send another message. Later speakers see earlier replies. No autonomous continuation button or background conversation loop.
+A local group chat with one to four agents. You send a message, each selected agent replies once in order, then the room stops until you send another message. Later speakers see earlier replies. A routine can send a message for you on a schedule, and the room then takes that same single turn. No autonomous continuation button or background conversation loop.
 
 ## Update on your Mac
 
@@ -53,7 +53,7 @@ Rooms and native session IDs live in `~/.roundtable/rooms.json`. The app listens
 
 Connections shows the number present at launch, never their values. Native CLI configuration files, plugins and hooks can still affect routing, permissions and billing; environment cleanup does not override those files. A private launch URL is saved in `~/.roundtable/launch-url.txt` with mode 0600. Bootstrap requires its secret or an existing request token, and SSE requires a request token. The browser stores the token in sessionStorage and removes the secret from the address bar. This protects against unauthenticated local callers and other operating-system users who cannot read the private file; it cannot isolate another process running as your same user.
 
-Every selected provider receives the shared transcript. Local storage does not mean model inference is local. Multiple participants using one account share that account's limits. This release has no Slack integration, cloud hosting, unattended scheduler or remote Mac control.
+Every selected provider receives the shared transcript. Local storage does not mean model inference is local. Multiple participants using one account share that account's limits. This release has no Slack integration, cloud hosting or remote Mac control. Routines are the one thing that starts a turn without you present; they are described below.
 
 ## Verification and troubleshooting
 
@@ -86,6 +86,37 @@ The conversation now renders Markdown lists, emphasis, headings, tables, links a
 The interface now has a room search, a context sidebar, readable mention labels and a composer plus menu. Use + to attach images, PDFs, text/code, open Skills, add an agent or edit notes. Drafts and pending file references survive room switches and page reloads using browser localStorage. Clearing browser storage removes these drafts.
 
 Agent avatars are generated inline SVG marks derived from each agent ID, tinted by provider, so the same agent looks the same in every room and no image is loaded. The ring turns slowly only while that agent is replying and is desaturated when its last reply failed or was interrupted; both respect the reduced motion setting. macOS system dictation also works in the composer; set its shortcut in System Settings, Keyboard, Dictation.
+
+## Routines
+
+A routine is a message you wrote, sent to a room on a schedule. When it fires, the room takes its ordinary turn: one reply from each selected participant, then it stops. A routine cannot start a second turn, and a reply cannot start one either. This is the only thing in Roundtable that begins a turn while you are away.
+
+Schedules are repeating (every N minutes, at least 15), daily at a time with an optional weekday or weekend filter, or once at a date and time. Times are your Mac's local time. The spec this was modelled on also offers cron and event triggers from GitHub, Slack and similar; those are not here. Event triggers need an inbound address, and Roundtable listens only on 127.0.0.1, so nothing outside your Mac can reach it.
+
+Rules that bound a routine:
+
+- **A room that allows project edits cannot carry one.** Roundtable grants file tools per room rather than approving each action, so an unattended turn would be able to write to your project with nobody there to approve it. Turn edits off in Room settings to use a routine with a Work room; read-only Work rooms are fine.
+- Each run spends the same provider quota as a message you send. The minimum repeat interval is 15 minutes and you can save up to 20 routines.
+- A run is skipped, not queued, when its room is replying, archived, deleted, or has no enabled participants. After three runs that could not start, the routine pauses itself and says why.
+- Runs missed while Roundtable was closed are not backfilled. The routine runs at its next scheduled time.
+- Test sends the message immediately so you can see what a run does before leaving it to the schedule.
+
+A routine's message appears in the transcript as an ordinary message from you, labelled with the routine's name. Upcoming runs are listed in the room details panel.
+
+## Secrets
+
+A secret is a value your agents' commands can use but your agents never see. It is an environment variable given to Codex, Claude or Antigravity when they run in a room you assigned it to, so a command they run can read it.
+
+- The value is never put in a prompt. The agent is told the name and your description, so it knows what exists and what it is for.
+- The value is removed from a reply, from an activity label and from an error before any of them is stored, shown or passed to the next participant, in case a command printed it.
+- Values live in a private file in your Roundtable data folder with user-only permissions, never in `rooms.json`, never in the browser, and never in an export.
+- A name must be a valid environment variable name. Names Roundtable strips to keep each CLI on its own login, such as `ANTHROPIC_API_KEY` or `OPENAI_BASE_URL`, are reserved, as are names that control how a process loads code, such as `PATH` and `NODE_OPTIONS`. A secret cannot be used to redirect an agent to another provider or to preload code into it.
+- Values are 8 to 4,096 characters. The floor exists because redaction works by matching the value in output, and a very short value would match ordinary words.
+- API participants run no commands, so they are never given secrets. Changing a room's secrets starts fresh native sessions, because a resumed agent would otherwise keep an environment it no longer has.
+
+### What is not here, and why
+
+The spec this was modelled on also has a Vault of website logins, card numbers and contact details. That feature exists there because that app drives a browser on its own machine and types the values into real web pages, which is what lets it promise that the model never sees them. Roundtable has no browser and no computer use: its agents are two command-line tools and some chat-only API participants. A stored password here could only ever be used by putting it into a prompt, which is the one thing the original design exists to prevent. Storing card numbers and website passwords in a plain local file, to deliver less safety than the password manager already on your Mac, is not worth doing, so it is deliberately absent. Secrets above are the part of that idea that does hold: a value that reaches the work without reaching the model.
 
 ## Agent characters
 

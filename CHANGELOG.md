@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.9.0
+
+### Added
+
+- Routines: a message you wrote, sent to a room on a repeating, daily or one-off schedule, which then takes one ordinary turn. Pause, resume, test and delete; upcoming runs in the room details panel; the injected message is labelled with its routine.
+- Secrets: write-only values put in the environment of a native agent's process in rooms you assign them to. The name and description reach the prompt, the value never does, and it is redacted from replies, activity labels and errors.
+
+### Changed
+
+- The README no longer claims there is no unattended scheduler. Routines are one, bounded as described there.
+
+### Notes
+
+- A room that allows project edits cannot carry a routine; there is nobody present to approve a file change.
+- Website logins and card storage from the source spec are deliberately not implemented. Roundtable has no browser to fill them into, so the guarantee that makes that feature safe cannot hold here.
+
 ## 0.8.0
 
 ### Added

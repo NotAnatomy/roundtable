@@ -10,10 +10,11 @@ const planStatus=v=>({in_progress:'running',inProgress:'running',completed:'done
 export const claudePlan=todos=>({type:'plan',items:(Array.isArray(todos)?todos:[]).map(t=>({key:t.content,label:t.status==='in_progress'&&t.activeForm?t.activeForm:t.content,status:planStatus(t.status)}))});
 export const codexPlan=items=>({type:'plan',items:(Array.isArray(items)?items:[]).map(i=>({label:i.step||i.text||i.label||'',status:i.completed===true?'done':planStatus(i.status)}))});
 
-export function launch(command,args,cwd,signal) {
+export function launch(command,args,cwd,signal,secrets={}) {
   signal.throwIfAborted();
   // Subscription login stays inside each official binary. No token extraction.
-  const env=sanitizedEnv(commandEnv(command));
+  // The user's own secrets are added after the strip, so they can never reinstate a provider or gateway variable.
+  const env={...sanitizedEnv(commandEnv(command)),...secrets};
   const child=spawn(command,args,{cwd,env,stdio:['pipe','pipe','pipe']});
   const stop=()=>{ child.kill('SIGTERM'); const t=setTimeout(()=>child.kill('SIGKILL'),2500); t.unref(); child.once('exit',()=>clearTimeout(t)); };
   signal.addEventListener('abort',stop,{once:true});
@@ -21,7 +22,7 @@ export function launch(command,args,cwd,signal) {
   child.stdin.on('error',()=>{});
   return child;
 }
-export async function runClaude({prompt,session,cwd,signal,onText,onActivity,onEvent=()=>{},mode,allowEdits,model,effort,media=[]}) {
+export async function runClaude({prompt,session,cwd,signal,onText,onActivity,onEvent=()=>{},mode,allowEdits,model,effort,media=[],secrets={}}) {
   const command=await requireCommand('claude');
   return new Promise((resolve,reject)=>{
     // TodoWrite touches no files; it lets the agent publish the plan the task list displays.
@@ -32,7 +33,7 @@ export async function runClaude({prompt,session,cwd,signal,onText,onActivity,onE
     if(session) args.push('--resume',session);
     if(model) args.push('--model',model);
     if(effort&&effort!=='auto') args.push('--effort',effort);
-    let child; try{child=launch(command,args,cwd,signal);}catch(e){reject(e);return;}
+    let child; try{child=launch(command,args,cwd,signal,secrets);}catch(e){reject(e);return;}
     let stderr='',result=null,text='';
     child.stderr.on('data',b=>{stderr=(stderr+b).slice(-5000);});
     child.on('error',e=>reject(new Error(`Claude Code could not start: ${e.message}. Install Claude Code and run claude once to sign in.`)));
@@ -56,9 +57,9 @@ export async function runClaude({prompt,session,cwd,signal,onText,onActivity,onE
   });
 }
 
-export async function runCodex({prompt,session,cwd,signal,onText,onActivity,onEvent=()=>{},mode,allowEdits,model,effort,media=[]}) {
+export async function runCodex({prompt,session,cwd,signal,onText,onActivity,onEvent=()=>{},mode,allowEdits,model,effort,media=[],secrets={}}) {
   const command=await requireCommand('codex');
-  const child=launch(command,['app-server'],cwd,signal);
+  const child=launch(command,['app-server'],cwd,signal,secrets);
   const waiting=new Map();let id=0,stderr='',settled=false,finalResolve,finalReject;
   const final=new Promise((resolve,reject)=>{finalResolve=resolve;finalReject=reject;});
   // The completion listener exists before a turn starts, including very fast turns.

@@ -4,7 +4,7 @@ import {requireCommand} from './commands.mjs';
 import {launch} from './providers.mjs';
 export function pinnedEffort(model=''){return model.match(/-(low|medium|high)$/)?.[1]||null;}
 export function modelArguments(model,effort){const args=[];if(model)args.push('--model',model);if(effort&&effort!=='auto'&&!pinnedEffort(model))args.push('--effort',effort);return args;}
-export async function runAntigravity({prompt,session,cwd,signal,onText,onActivity,model,effort,mode}){
+export async function runAntigravity({prompt,session,cwd,signal,onText,onActivity,model,effort,mode,secrets={}}){
  if(mode==='work')throw new Error('Antigravity is available in Lounge only.');
  const command=await requireCommand('agy');
  // Official headless mode uses the user's existing native Google login.
@@ -12,7 +12,7 @@ export async function runAntigravity({prompt,session,cwd,signal,onText,onActivit
  args.push(...modelArguments(model,effort));
  if(session)args.push('--conversation',session);
  return new Promise((resolve,reject)=>{
-  let child;try{child=launch(command,args,cwd,signal);}catch(e){reject(e);return;}
+  let child;try{child=launch(command,args,cwd,signal,secrets);}catch(e){reject(e);return;}
   let text='',stderr='',result=null,conversation=session;
   child.stderr.on('data',b=>stderr=(stderr+b).slice(-4000));child.on('error',reject);
   createInterface({input:child.stdout}).on('line',line=>{

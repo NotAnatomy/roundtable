@@ -29,7 +29,7 @@ function render(s){
  const keys=new Set(s.messages.map(m=>m.id));for(const [id,v]of rendered)if(!keys.has(id)){v.node.remove();rendered.delete(id);}
  for(const m of s.messages){let v=rendered.get(m.id);if(!v){
    const node=el('article','message'),avatar=agentAvatar(m.agentId?s.agents.find(a=>a.id===m.agentId)||{id:m.agentId,name:m.speaker,provider:m.provider}:null,m.speaker);
-   const content=el('div','message-content'),head=el('div','message-header'),name=el('strong','',m.speaker),time=el('time','',new Date(m.time).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})),badge=el('span','badge');head.append(name,time,badge);if(m.provider)head.append(el('span','message-model',providerNames[m.provider]+' · '+m.model));
+   const content=el('div','message-content'),head=el('div','message-header'),name=el('strong','',m.routine?m.speaker+' · routine':m.speaker),time=el('time','',new Date(m.time).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})),badge=el('span','badge');head.append(name,time,badge);if(m.provider)head.append(el('span','message-model',providerNames[m.provider]+' · '+m.model));if(m.routine)head.append(el('span','routine-chip','⟳ '+m.routine.title));
    const text=el('div','message-text'),tools=el('div','message-tools'),tasks=el('details','task-card'),tasksSummary=el('summary'),tasksBody=el('div','task-panel');tasks.append(tasksSummary,tasksBody);tasks.hidden=true;tasks.ontoggle=()=>{if(tasks.dataset.auto!=='1')v.tasksTouched=true;delete tasks.dataset.auto;};
    const copy=el('button','','Copy');copy.onclick=()=>navigator.clipboard.writeText(v.last||'').then(()=>toast('Copied')).catch(()=>toast('Select the text to copy it.'));tools.append(copy);const pin=el('button','','Pin');pin.type='button';pin.onclick=()=>api('pins',{id:m.id}).catch(e=>toast(e.message));tools.append(pin);
    const retry=el('button','','Retry');retry.onclick=()=>api('retry',{id:m.id}).catch(e=>toast(e.message));tools.append(retry);const listen=el('button','','Listen');listen.type='button';listen.onclick=()=>toggleSpeech(m.id,listen);tools.append(listen);const usage=el('small','usage');const files=el('div','message-attachments');content.append(head,tasks,text,files,usage,tools);node.append(avatar,content);$('#thread').append(node);v={node,avatar,text,badge,pin,retry,listen,usage,files,tasks,tasksSummary,tasksBody,last:null};rendered.set(m.id,v);
@@ -50,7 +50,7 @@ function render(s){
  const peopleKey=JSON.stringify([s.agents,s.activeAgent,s.busy,s.skills,s.agents.map(lastStatus)]);if(peopleKey!==lastPeople){lastPeople=peopleKey;$('#people').replaceChildren();const target=$('#target').value;$('#target').replaceChildren(new Option('Everyone','all'));
    for(const a of s.agents.filter(a=>a.enabled)){const person=el('div','person'+(a.id===s.activeAgent?' active':'')),av=agentAvatar(a,a.name),info=el('div');av.dataset.state=avatarState({busy:s.busy,active:s.activeAgent===a.id,status:lastStatus(a),archived:s.archived});info.append(el('div','person-name',a.name),el('div','person-role',a.role+' · @'+a.id),el('div','person-role',providerNames[a.provider]+' · '+(a.model||'Default model')));for(const id of a.skillIds||[]){const skill=s.skills.find(s=>s.id===id);if(skill)info.append(el('span','skill-chip',skill.name));}person.append(av,info);$('#people').append(person);$('#target').append(new Option(a.name,a.id));}if([...$('#target').options].some(o=>o.value===target))$('#target').value=target;
  }
- renderContext();renderWorking(s);
+ renderContext();renderWorking(s);renderUpcoming(s);
 }
 async function send(text){if(sending)return;sending=true;$('#send-btn').disabled=true;const roomId=state.id,sentFiles=[...pendingFiles],sentText=$('#message').value;try{const result=await api('message',{roomId,text:text.trim()||'Please review the attached files.',target:$('#target').value,attachments:sentFiles});if(result.routedBy?.length)toast('Routed by @mention: '+result.routedBy.join(', '));const current=state.id===roomId?{text:$('#message').value,files:pendingFiles}:drafts.get(roomId)||{text:'',files:[]};const remaining=finishSend(current,{text:sentText,files:sentFiles});drafts.set(roomId,remaining);if(state.id===roomId){$('#message').value=remaining.text;pendingFiles=remaining.files;renderPending();}}catch(e){toast(e.message);}finally{sending=false;$('#send-btn').disabled=state.busy;}}
 $('#composer').onsubmit=e=>{e.preventDefault();if(!state.busy&&!state.archived&&($('#message').value.trim()||pendingFiles.length))void send($('#message').value);};
@@ -60,7 +60,7 @@ $('#stop-btn').onclick=()=>api('stop',{}).catch(e=>toast(e.message));
 
 const providerNames={codex:'Codex',claude:'Claude Code',google:'Google Gemini API',agentrouter:'AgentRouter API',antigravity:'Antigravity'};
 function freshAgent(i){return {id:((i===0?'codex':i===1?'claude':'agent')+'_'+crypto.randomUUID().slice(0,6)),name:i%2?'Claude':'Codex',provider:i%2?'claude':'codex',role:i%2?'Reviewer':'Builder',instructions:'Contribute to your assigned job. Read and respond to earlier contributions when useful. Give one concise reply.',enabled:true,model:'',effort:'auto'};}
-function openSettings(mode,isNew=false){if(state.busy&&!isNew)return toast('Stop this room before changing its agents.');creating=isNew;const f=$('#settings-form');f.elements.title.value=isNew?'':state.title;f.elements.mode.value=mode||state.mode;f.elements.workspace.value=state.workspace;f.elements.notes.value=isNew?'':state.notes;f.elements.allowEdits.checked=isNew?false:state.allowEdits;editingAgents=isNew?[freshAgent(0),freshAgent(1)]:structuredClone(state.agents);$('#settings-title').textContent=isNew?'Create a room':'Room settings';$('#settings-form .primary').textContent=isNew?'Create room':'Save changes';$('#room-actions').hidden=isNew;$('#archive-room').textContent=state.archived?'Unarchive room':'Archive room';renderEditors();$('#settings').showModal();}
+function openSettings(mode,isNew=false){if(state.busy&&!isNew)return toast('Stop this room before changing its agents.');creating=isNew;const f=$('#settings-form');f.elements.title.value=isNew?'':state.title;f.elements.mode.value=mode||state.mode;f.elements.workspace.value=state.workspace;f.elements.notes.value=isNew?'':state.notes;f.elements.allowEdits.checked=isNew?false:state.allowEdits;editingAgents=isNew?[freshAgent(0),freshAgent(1)]:structuredClone(state.agents);$('#settings-title').textContent=isNew?'Create a room':'Room settings';$('#settings-form .primary').textContent=isNew?'Create room':'Save changes';$('#room-actions').hidden=isNew;renderRoomSecrets();$('#archive-room').textContent=state.archived?'Unarchive room':'Archive room';renderEditors();$('#settings').showModal();}
 function renderEditors(){const parent=$('#agent-editors');parent.replaceChildren();$('#agent-count').value=editingAgents.length;editingAgents.forEach((a,index)=>{
  const box=el('div','agent-editor'),row=el('div','row');box.append(el('h3','',`Agent ${index+1}`));const order=el('div','agent-order');for(const [label,delta]of [['Move earlier',-1],['Move later',1]]){const b=el('button','',label);b.type='button';b.disabled=index+delta<0||index+delta>=editingAgents.length;b.onclick=()=>{[editingAgents[index],editingAgents[index+delta]]=[editingAgents[index+delta],editingAgents[index]];renderEditors();};order.append(b);}box.append(order);
  function field(title,key,type='input'){const label=el('label','',title),input=el(type);input.value=a[key]||'';if(type==='textarea'){input.rows=2;input.maxLength=6000;}else input.maxLength=key==='name'?40:key==='model'?200:120;input.oninput=()=>a[key]=input.value;label.append(input);return label;}
@@ -77,7 +77,7 @@ function renderEditors(){const parent=$('#agent-editors');parent.replaceChildren
  });$('#add-agent').disabled=editingAgents.length>=4;}
 $('#agent-count').onchange=e=>{const n=Number(e.target.value);while(editingAgents.length<n)editingAgents.push(freshAgent(editingAgents.length));editingAgents.length=n;renderEditors();};
 $('#add-agent').onclick=()=>{if(editingAgents.length<4){editingAgents.push(freshAgent(editingAgents.length));renderEditors();}};
-$('#settings-form').onsubmit=async e=>{e.preventDefault();const f=e.target;try{if(f.elements.workspace.value){const resolved=await api('workspace/resolve',{workspace:f.elements.workspace.value});f.elements.workspace.value=resolved.workspace;if(f.elements.allowEdits.checked&&!confirm('Allow agents to edit files in '+resolved.workspace+'?'))return;}await api(creating?'rooms/create':'settings',{title:f.elements.title.value,mode:f.elements.mode.value,workspace:f.elements.workspace.value,allowEdits:f.elements.allowEdits.checked,notes:f.elements.notes.value,agents:editingAgents});$('#settings').close();document.body.classList.remove('show-rooms');}catch(e){toast(e.message);}};
+$('#settings-form').onsubmit=async e=>{e.preventDefault();const f=e.target;try{if(f.elements.workspace.value){const resolved=await api('workspace/resolve',{workspace:f.elements.workspace.value});f.elements.workspace.value=resolved.workspace;if(f.elements.allowEdits.checked&&!confirm('Allow agents to edit files in '+resolved.workspace+'?'))return;}if(!creating)await saveRoomSecrets();await api(creating?'rooms/create':'settings',{title:f.elements.title.value,mode:f.elements.mode.value,workspace:f.elements.workspace.value,allowEdits:f.elements.allowEdits.checked,notes:f.elements.notes.value,agents:editingAgents});$('#settings').close();document.body.classList.remove('show-rooms');}catch(e){toast(e.message);}};
 $('#close-settings').onclick=()=>$('#settings').close();for(const id of ['settings-btn','edit-agents'])$('#'+id).onclick=()=>openSettings();for(const id of ['notes-btn','context-notes'])$('#'+id).onclick=async()=>{const roomId=state.id,notes=prompt('Shared notes for this room',state.notes);if(notes!==null)try{await api('notes',{roomId,notes});}catch(e){toast(e.message);}};
 $('#lounge-btn').onclick=()=>{if(state.mode!=='lounge')openSettings('lounge');};$('#work-btn').onclick=()=>{if(state.mode!=='work')openSettings('work');};
 $('#new-btn').onclick=()=>openSettings(undefined,true);
@@ -189,6 +189,125 @@ $('#create-skill').onclick=()=>editSkill();$('#cancel-skill').onclick=()=>{$('#s
 $('#skill-form').onsubmit=async e=>{e.preventDefault();const f=e.target;try{await api('skills/save',Object.fromEntries(new FormData(f)));state=(await api('bootstrap')).state;f.hidden=true;renderSkills();toast('Skill saved. Assign it in an agent’s settings.');}catch(e){toast(e.message);}};
 $('#import-skill').onclick=()=>$('#skill-import-input').click();$('#skill-import-input').onchange=async e=>{try{const file=e.target.files[0];if(!file)return;if(file.size>48000)throw new Error('Import a Markdown file under 12,000 characters.');const text=await file.text();if(text.length>12000||text.includes('\0'))throw new Error('Import a text Markdown file under 12,000 characters.');const front=text.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);const name=front?.[1].match(/^name:\s*(.+)$/m)?.[1]?.replace(/^['"]|['"]$/g,'')||file.name.replace(/\.(md|txt)$/i,'');editSkill({name:name.slice(0,64),description:'Imported instructions. Review before saving.',instructions:front?text.slice(front[0].length):text});}catch(e){toast(e.message);}finally{e.target.value='';}};
 function usageText(u){if(!u)return '';return [u.inputTokens!==undefined?u.inputTokens.toLocaleString()+' in':null,u.outputTokens!==undefined?u.outputTokens.toLocaleString()+' out':null,u.costUsd!==undefined?'$'+u.costUsd.toFixed(4)+' provider estimate':null].filter(Boolean).join(' / ');}
+// ---- Routines -------------------------------------------------------------
+const scheduleFields={daily:['time','days'],every:['minutes'],once:['at']};
+function syncScheduleFields(){
+ const kind=$('#routine-form').elements.kind.value;
+ for(const [name,ids]of Object.entries({minutes:['field-minutes'],time:['field-time'],days:['field-days'],at:['field-at']}))
+  for(const id of ids)$('#'+id).hidden=!(scheduleFields[kind]||[]).includes(name);
+}
+function routineRooms(){return (state?.rooms||[]).filter(r=>!r.archived);}
+function syncRoutineTargets(roomId,selected){
+ const select=$('#routine-form').elements.target,room=state?.rooms.find(r=>r.id===roomId);
+ select.replaceChildren(new Option('Everyone','all'));
+ // The room list carries counts, not agents, so only the open room can offer individual participants.
+ if(room&&room.id===state.id)for(const a of state.agents.filter(a=>a.enabled))select.append(new Option(a.name,a.id));
+ select.value=[...select.options].some(o=>o.value===selected)?selected:'all';
+}
+function editRoutine(routine={}){
+ const form=$('#routine-form');form.hidden=false;
+ form.elements.roomId.replaceChildren(...routineRooms().map(r=>new Option(r.title,r.id)));
+ form.elements.id.value=routine.id||'';form.elements.title.value=routine.title||'';
+ form.elements.instruction.value=routine.instruction||'';
+ form.elements.roomId.value=routine.roomId||state.id;
+ const s=routine.schedule||{kind:'daily',time:'09:00',days:'all'};
+ form.elements.kind.value=s.kind;form.elements.minutes.value=s.minutes||60;form.elements.time.value=s.time||'09:00';
+ form.elements.days.value=s.days||'all';form.elements.at.value=s.at?new Date(s.at).toISOString().slice(0,16):'';
+ syncScheduleFields();syncRoutineTargets(form.elements.roomId.value,routine.target||'all');
+ $('#routine-editor-title').textContent=routine.id?'Edit routine':'New routine';
+ form.scrollIntoView({block:'start'});form.elements.title.focus();
+}
+function renderRoutines(){
+ const host=$('#routine-list');host.replaceChildren();
+ const list=state?.routines||[];
+ if(!list.length)host.append(el('p','help','No routines yet.'));
+ for(const r of list){
+  const card=el('div','skill-card'),info=el('div'),room=state.rooms.find(x=>x.id===r.roomId);
+  info.append(el('h3','',r.title));
+  const when=el('p','',`${r.scheduleText} · ${room?room.title:'room missing'}${r.target==='all'?'':' · @'+r.target}`);info.append(when);
+  const status=[r.enabled?null:'Paused',r.lastRun?'Last ran '+new Date(r.lastRun).toLocaleString():'Never run',
+   r.enabled&&r.nextRun?'Next '+new Date(r.nextRun).toLocaleString():null,r.lastReason||null].filter(Boolean).join(' · ');
+  info.append(el('p',r.lastReason?'limitation':'help',status));
+  const toggle=el('button','',r.enabled?'Pause':'Resume');toggle.onclick=()=>api('routines/toggle',{id:r.id}).catch(e=>toast(e.message));
+  const run=el('button','','Test');run.onclick=async()=>{run.disabled=true;try{await api('routines/run',{id:r.id});toast(`"${r.title}" sent its message to ${room?room.title:'its room'}.`);}catch(e){toast(e.message);}finally{run.disabled=false;}};
+  const edit=el('button','','Edit');edit.onclick=()=>editRoutine(r);
+  const remove=el('button','','Delete');remove.onclick=()=>{if(confirm(`Delete the routine "${r.title}"? Messages it already sent stay in the room.`))api('routines/delete',{id:r.id}).catch(e=>toast(e.message));};
+  card.append(info,toggle,run,edit,remove);host.append(card);
+ }
+}
+function openRoutines(){closePlus();renderRoutines();$('#routine-form').hidden=true;$('#routines').showModal();}
+$('#routines-btn').onclick=openRoutines;$('#upcoming-edit').onclick=openRoutines;
+$('#close-routines').onclick=()=>$('#routines').close();
+$('#create-routine').onclick=()=>editRoutine();
+$('#cancel-routine').onclick=()=>$('#routine-form').hidden=true;
+$('#routine-form').elements.kind.onchange=syncScheduleFields;
+$('#routine-form').elements.roomId.onchange=e=>syncRoutineTargets(e.target.value,'all');
+$('#routine-form').onsubmit=async e=>{
+ e.preventDefault();const f=e.target.elements,kind=f.kind.value;
+ const schedule=kind==='every'?{kind,minutes:Number(f.minutes.value)}
+  :kind==='daily'?{kind,time:f.time.value,days:f.days.value}
+  :{kind,at:f.at.value?new Date(f.at.value).toISOString():''};
+ try{await api('routines/save',{id:f.id.value||undefined,title:f.title.value,instruction:f.instruction.value,roomId:f.roomId.value,target:f.target.value,schedule});
+  $('#routine-form').hidden=true;renderRoutines();toast('Routine saved.');}catch(err){toast(err.message);}
+};
+function renderUpcoming(s){
+ const next=(s.routines||[]).filter(r=>r.enabled&&r.nextRun).sort((a,b)=>a.nextRun-b.nextRun).slice(0,4);
+ $('#upcoming').hidden=!next.length;$('#routine-count').textContent=(s.routines||[]).length||'';
+ $('#upcoming-list').replaceChildren(...next.map(r=>{
+  const row=el('div','upcoming-row'),room=s.rooms.find(x=>x.id===r.roomId);
+  row.append(el('strong','',r.title),el('span','',`${r.scheduleText}${room&&room.id!==s.id?' · '+room.title:''}`));
+  return row;}));
+}
+
+// ---- Secrets --------------------------------------------------------------
+function editSecret(secret={}){
+ const form=$('#secret-form');form.hidden=false;
+ for(const name of ['id','name','description'])form.elements[name].value=secret[name]||'';
+ form.elements.value.value='';form.elements.value.required=!secret.id;
+ form.elements.value.placeholder=secret.id?'Leave blank to keep the saved value':'Paste the value';
+ $('#secret-value-note').textContent=secret.id?'Leave the value blank to keep what is saved. A new value replaces it and is never shown again.':'8 to 4,096 characters. Once saved it is never shown again.';
+ $('#secret-editor-title').textContent=secret.id?'Edit secret':'New secret';
+ form.scrollIntoView({block:'start'});form.elements.name.focus();
+}
+function renderSecrets(){
+ const host=$('#secret-list');host.replaceChildren();
+ const list=state?.secrets||[];
+ if(!list.length)host.append(el('p','help','No secrets yet.'));
+ for(const secret of list){
+  const card=el('div','skill-card'),info=el('div'),rooms=(state.rooms||[]).length;
+  info.append(el('h3','',secret.name),el('p','',secret.description));
+  info.append(el('p','help','Value saved. Assign it to a room in Room settings.'));
+  const edit=el('button','','Edit');edit.onclick=()=>editSecret(secret);
+  const remove=el('button','','Delete');remove.onclick=()=>{if(confirm(`Delete ${secret.name}? Any room using it loses it at once, and agents there start fresh sessions.`))api('secrets/delete',{id:secret.id}).catch(e=>toast(e.message));};
+  card.append(info,edit,remove);host.append(card);
+ }
+}
+function openSecrets(){closePlus();renderSecrets();$('#secret-form').hidden=true;$('#secrets').showModal();}
+$('#secrets-btn').onclick=openSecrets;$('#close-secrets').onclick=()=>$('#secrets').close();
+$('#create-secret').onclick=()=>editSecret();
+$('#cancel-secret').onclick=()=>$('#secret-form').hidden=true;
+$('#secret-form').onsubmit=async e=>{
+ e.preventDefault();const f=e.target.elements;
+ const payload={id:f.id.value||undefined,name:f.name.value,description:f.description.value};
+ if(f.value.value)payload.value=f.value.value;
+ try{await api('secrets/save',payload);f.value.value='';$('#secret-form').hidden=true;renderSecrets();toast('Secret saved.');}catch(err){toast(err.message);}
+};
+function renderRoomSecrets(){
+ const host=$('#room-secrets');host.replaceChildren();
+ const list=state?.secrets||[];
+ if(!list.length){host.append(el('p','help','No secrets saved yet. Add one in Secrets.'));return;}
+ for(const secret of list){
+  const label=el('label'),check=el('input');check.type='checkbox';check.value=secret.id;
+  check.checked=(state.secretIds||[]).includes(secret.id);
+  label.title=secret.description;label.append(check,document.createTextNode(secret.name));host.append(label);
+ }
+}
+async function saveRoomSecrets(){
+ const ids=[...$('#room-secrets').querySelectorAll('input:checked')].map(i=>i.value);
+ if(JSON.stringify(ids)===JSON.stringify(state.secretIds||[]))return;
+ await api('secrets/assign',{secretIds:ids});
+}
+
 // ---- Find in conversation -------------------------------------------------
 // Matches come from the message text the server sent, not from rendered nodes, so
 // Markdown structure and streaming updates cannot desynchronise the match list.
@@ -221,6 +340,8 @@ function paletteCommands(){
  action('New room','Choose participants and start fresh',()=>openSettings(undefined,true));
  action('Room settings','Agents, mode, notes and project access',()=>openSettings(),!s?.busy);
  action('Skills','Create, import or assign reusable instructions',openSkills);
+ action('Routines','Scheduled messages that run a normal turn',openRoutines);
+ action('Secrets','Values your agents\u2019 commands can use',openSecrets);
  action('Connections','Check CLIs and API keys',()=>{$('#connections').showModal();void connections();});
  action('Preferences','Background, motion and notifications',()=>$('#preferences').showModal());
  action('Find in conversation','Search this room’s messages',openFind);

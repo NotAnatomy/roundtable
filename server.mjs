@@ -22,6 +22,8 @@ import {listCodexModels,listAntigravityModels} from './catalog.mjs';
 import {collectGarbage,removeRoomFiles} from './retention.mjs';
 import {fetchSkillSource} from './skill-fetch.mjs';
 import {createTaskTracker} from './tasks.mjs';
+import {validateSecret,secretEnv,redactSecrets,describeSecrets} from './secrets.mjs';
+import {validateRoutine,nextRun,dueRoutines,blockedReason,advance,describeSchedule} from './routines.mjs';
 
 const root=path.dirname(fileURLToPath(import.meta.url));
 const {version}=JSON.parse(await fs.readFile(path.join(root,'package.json'),'utf8'));
@@ -32,13 +34,19 @@ const {state:db,save}=await openStore(data);
 let room=db.rooms.find(r=>r.id===db.selectedId)||db.rooms[0];
 const keyFile=path.join(data,'connections.json');let connections={};
 try{connections=JSON.parse(await fs.readFile(keyFile,'utf8'));}catch(e){if(e.code!=='ENOENT')throw e;}
+const secretFile=path.join(data,'secrets.json');let secretValues={};
+try{secretValues=JSON.parse(await fs.readFile(secretFile,'utf8'));}catch(e){if(e.code!=='ENOENT')throw e;}
+const saveSecrets=async()=>{await fs.writeFile(secretFile+'.tmp',JSON.stringify(secretValues),{mode:0o600});await fs.rename(secretFile+'.tmp',secretFile);};
+// A room reaches only the secrets it was given, and only a native CLI is given an environment at all.
+const roomSecrets=target=>(target.secretIds||[]).map(id=>db.secrets.find(s=>s.id===id)).filter(Boolean).map(s=>({...s,value:secretValues[s.id]})).filter(s=>typeof s.value==='string');
+const allSecretValues=()=>Object.values(secretValues).map(value=>({value}));
 const token=randomBytes(32).toString('hex'),launchSecret=randomBytes(32).toString('hex');
 const clients=new Set(),jobs=new Map();let mutating=false;
 const equal=(a,b)=>typeof a==='string'&&Buffer.byteLength(a)===Buffer.byteLength(b)&&timingSafeEqual(Buffer.from(a),Buffer.from(b));
-const snapshot=()=>{const {sessions,...publicRoom}=room,active=jobs.get(room.id);return {...publicRoom,busy:!!active,activeAgent:active?.agent||null,activity:active?.activity||'',capacity:budget(room),usage:totalUsage(room.messages),rooms:db.rooms.map(r=>({id:r.id,title:r.title,agents:r.agents.length,count:r.messages.length,busy:jobs.has(r.id),archived:!!r.archived})),skills:db.skills,voice:voiceInfo(),version};};
+const snapshot=()=>{const {sessions,...publicRoom}=room,active=jobs.get(room.id);return {...publicRoom,busy:!!active,activeAgent:active?.agent||null,activity:active?.activity||'',capacity:budget(room),usage:totalUsage(room.messages),rooms:db.rooms.map(r=>({id:r.id,title:r.title,agents:r.agents.length,count:r.messages.length,busy:jobs.has(r.id),archived:!!r.archived})),skills:db.skills,voice:voiceInfo(),secrets:db.secrets.map(({id,name,description})=>({id,name,description})),routines:db.routines.map(r=>({...r,scheduleText:describeSchedule(r.schedule)})),version};};
 function emit(event,data){const content=frame(event,data);for(const res of clients){if(res.writableLength>1024*1024){res.end();clients.delete(res);}else res.write(content);}}
 function broadcast(){emit('state',snapshot());}
-const safeError=e=>Object.values(connections).reduce((t,c)=>c.key?t.split(c.key).join('[redacted]'):t,String(e?.message||e));
+const safeError=e=>redactSecrets(Object.values(connections).reduce((t,c)=>c.key?t.split(c.key).join('[redacted]'):t,String(e?.message||e)),allSecretValues());
 const connectionInfo=()=>Object.fromEntries(['google','agentrouter'].map(p=>[p,{configured:!!connections[p]?.key,baseURL:connections[p]?.baseURL||'',protocol:connections[p]?.protocol||'openai',...(p==='google'?{dictationModel:connections.google?.dictationModel||VOICE_DEFAULTS.dictationModel,voiceModel:connections.google?.voiceModel||VOICE_DEFAULTS.voiceModel,voiceName:connections.google?.voiceName||VOICE_DEFAULTS.voiceName,voices:VOICE_NAMES}:{})}]));
 const voiceInfo=()=>({ready:!!connections.google?.key});
 async function validateSettings(input){
@@ -87,23 +95,64 @@ async function runGroup(target,speakers,job,retry=null){
   const key=agent.id+':'+fingerprint,stored=target.sessions[key],native=['claude','codex','antigravity'].includes(agent.provider);
   const session=retry?undefined:typeof stored==='string'?stored:stored?.id,after=retry?null:stored?.through;
   let prompt,fullPrompt,m=retry?.message;
-  try{fullPrompt=retry?.request.prompt||makePrompt(target,agent,db.skills);prompt=retry?fullPrompt:makePrompt(target,agent,db.skills,native&&session&&after?{after}:{});}catch(e){message(target,{id:'system',name:'Room'},safeError(e),'error','error');break;}
+  const secrets=native?roomSecrets(target):[],described=describeSecrets(secrets);
+  try{fullPrompt=retry?.request.prompt||makePrompt(target,agent,db.skills,{},described);prompt=retry?fullPrompt:makePrompt(target,agent,db.skills,native&&session&&after?{after}:{},described);}catch(e){message(target,{id:'system',name:'Room'},safeError(e),'error','error');break;}
   if(!m)m=message(target,agent,'','streaming');else{m.attempts||=[];m.attempts.push({text:m.text,status:m.status,usage:m.usage,time:m.time});m.text='';m.status='streaming';m.kind='message';delete m.usage;delete m.tasks;}
   const tracker=createTaskTracker();
   const request=retry?.request||{prompt:fullPrompt,agent:structuredClone(agent),mode:target.mode,allowEdits:target.allowEdits,cwd,media:mediaRefs(target)};
   await fs.writeFile(path.join(requestDir,m.id+'.json'),JSON.stringify(request),{mode:0o600});
   const updates=deltaSender(emit);const update=()=>updates.push({roomId:target.id,id:m.id,text:m.text,activity:job.activity,activeAgent:agent.id,tasks:m.tasks||null});broadcast();
-  const onEvent=event=>{tracker.apply(event);const snap=tracker.snapshot();if(snap)m.tasks=snap;update();};
+  // A tool label is built from the command the agent ran, so it can carry a value too.
+  const onEvent=event=>{tracker.apply(event&&event.label?{...event,label:redactSecrets(event.label,secrets)}:event);const snap=tracker.snapshot();if(snap)m.tasks=snap;update();};
   try{const runner=agent.provider==='codex'?runCodex:agent.provider==='claude'?runClaude:agent.provider==='antigravity'?runAntigravity:runApi;
-   const result=await runner({provider:agent.provider,model:agent.model,effort:agent.effort,config:connections[agent.provider],prompt,session,cwd:request.cwd,signal:controller.signal,mode:request.mode,allowEdits:request.allowEdits,media:await mediaFiles.images(retry?request.media:mediaRefs(target,native&&session?after:null)),
-    onText:text=>{m.text=text;update();},onActivity:text=>{job.activity=text;update();},onEvent});
-   onEvent({type:'finish',ok:true});m.text=result.text;m.status='complete';m.usage=result.usage;updates.flush();await fs.rm(path.join(requestDir,m.id+'.json'),{force:true});
+   const result=await runner({provider:agent.provider,model:agent.model,effort:agent.effort,config:connections[agent.provider],prompt,session,cwd:request.cwd,signal:controller.signal,mode:request.mode,allowEdits:request.allowEdits,secrets:secretEnv(secrets),media:await mediaFiles.images(retry?request.media:mediaRefs(target,native&&session?after:null)),
+    onText:text=>{m.text=redactSecrets(text,secrets);update();},onActivity:text=>{job.activity=redactSecrets(text,secrets);update();},onEvent});
+   onEvent({type:'finish',ok:true});m.text=redactSecrets(result.text,secrets);m.status='complete';m.usage=result.usage;updates.flush();await fs.rm(path.join(requestDir,m.id+'.json'),{force:true});
    // Retry uses a fresh native session and cannot advance a later room checkpoint.
    if(result.session&&!retry)target.sessions[key]={id:result.session,through:m.id};await save();broadcast();
   }catch(e){onEvent({type:'finish',ok:false});updates.flush();m.status=controller.signal.aborted?'interrupted':'error';m.kind='error';if(e.usage)m.usage=e.usage;m.text=(m.text?m.text+'\n\n':'')+(controller.signal.aborted?'This reply was interrupted.':safeError(e));delete target.sessions[key];await save();broadcast();if(controller.signal.aborted)break;}
  }}catch(e){message(target,{id:'system',name:'Room'},safeError(e),'error','error');}
  finally{clearTimeout(deadline);jobs.delete(target.id);await save();broadcast();}
 }
+// ---- Routines -------------------------------------------------------------
+// A routine puts its instruction into the room as an ordinary message and lets the room take its
+// normal turn: one reply per selected participant, then it stops. Nothing here loops or continues
+// on its own. Returns null when the turn started, or the reason it did not.
+async function fireRoutine(routine,{test=false}={}){
+ const target=db.rooms.find(r=>r.id===routine.roomId);
+ const blocked=blockedReason(routine,target,jobs.has(routine.roomId));
+ if(blocked)return blocked;
+ const speakers=routeSpeakers(routine.instruction,target.agents,routine.target).speakers;
+ if(!speakers.length)return 'No participant was available to reply.';
+ const usage=budget(target,routine.instruction);
+ if(usage.used>usage.limit)return 'Its room is full. Continue in a new room and point the routine there.';
+ const job=startJob(target),m=message(target,null,routine.instruction);
+ m.routine={id:routine.id,title:routine.title};
+ try{await save();}catch(e){target.messages.pop();jobs.delete(target.id);return safeError(e);}
+ log(`routine ${test?'tested':'ran'}: ${routine.title} in ${target.title}`);
+ void runGroup(target,structuredClone(speakers),job);
+ return null;
+}
+const log=text=>console.log(`[${new Date().toISOString()}] ${text}`);
+// One timer, not one per routine: schedules survive a restart because the next time is stored, and a
+// routine missed while the app was closed runs at its next turn rather than firing a backlog at launch.
+let sweeping=false;
+async function sweepRoutines(now=Date.now()){
+ if(sweeping)return;sweeping=true;
+ try{
+  for(const routine of dueRoutines(db.routines,now)){
+   const reason=await fireRoutine(routine);
+   const index=db.routines.findIndex(r=>r.id===routine.id);if(index<0)continue;
+   db.routines[index]=advance(db.routines[index],{ran:!reason,reason,now});
+   if(reason)log(`routine skipped: ${routine.title} — ${reason}`);
+   if(!db.routines[index].enabled)log(`routine paused: ${routine.title} — ${db.routines[index].lastReason}`);
+   await save();broadcast();
+  }
+ }catch(e){console.error('Routine sweep failed: '+safeError(e));}
+ finally{sweeping=false;}
+}
+for(const routine of db.routines)if(routine.enabled&&typeof routine.nextRun!=='number')routine.nextRun=nextRun(routine.schedule);
+setInterval(()=>void sweepRoutines(),30000).unref();
 function json(res,status,value){res.writeHead(status,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(value));}
 function authorized(req){return equal(req.headers['x-roundtable-token'],token);}
 async function body(req,limit=250000){const chunks=[];let bytes=0;for await(const chunk of req){bytes+=chunk.length;if(bytes>limit)throw new Error('Request is too large.');chunks.push(chunk);}return JSON.parse(Buffer.concat(chunks).toString('utf8')||'{}');}
@@ -170,6 +219,49 @@ const server=http.createServer(async(req,res)=>{
           connections[input.provider]=config;
         }
         await fs.writeFile(keyFile+'.tmp',JSON.stringify(connections),{mode:0o600});await fs.rename(keyFile+'.tmp',keyFile);return json(res,200,connectionInfo());
+      }
+      if(url.pathname==='/api/secrets/save'){
+        const existing=db.secrets.find(s=>s.id===input.id);
+        if(!existing&&typeof input.value!=='string')throw new Error('Enter the secret value.');
+        const fields=validateSecret(input,db.secrets);
+        if(existing){Object.assign(existing,{name:fields.name,description:fields.description});if(fields.value!==undefined){secretValues[existing.id]=fields.value;await saveSecrets();}}
+        else{const id=randomUUID();db.secrets.push({id,name:fields.name,description:fields.description});secretValues[id]=fields.value;await saveSecrets();}
+        await save();broadcast();return json(res,200,{ok:true});
+      }
+      if(url.pathname==='/api/secrets/delete'){
+        if(!db.secrets.some(s=>s.id===input.id))throw new Error('Secret not found.');
+        db.secrets=db.secrets.filter(s=>s.id!==input.id);delete secretValues[input.id];
+        for(const r of db.rooms)r.secretIds=(r.secretIds||[]).filter(id=>id!==input.id);
+        await saveSecrets();await save();broadcast();return json(res,200,{ok:true});
+      }
+      if(url.pathname==='/api/secrets/assign'){
+        if(!Array.isArray(input.secretIds)||input.secretIds.some(id=>!db.secrets.some(s=>s.id===id)))throw new Error('Choose saved secrets.');
+        // A fresh native session is needed so a resumed agent cannot keep using an environment it no longer has.
+        target.secretIds=[...new Set(input.secretIds)];target.sessions={};
+        await save();broadcast();return json(res,200,{ok:true});
+      }
+      if(url.pathname==='/api/routines/save'){
+        const fields=validateRoutine(input,db.routines,db.rooms),existing=db.routines.find(r=>r.id===input.id);
+        if(existing)Object.assign(existing,fields,{nextRun:nextRun(fields.schedule),skips:0,lastReason:''});
+        else db.routines.push({id:randomUUID(),...fields,enabled:true,nextRun:nextRun(fields.schedule),lastRun:null,lastResult:'',lastReason:'',skips:0});
+        await save();broadcast();return json(res,200,{ok:true});
+      }
+      if(url.pathname==='/api/routines/delete'){
+        if(!db.routines.some(r=>r.id===input.id))throw new Error('Routine not found.');
+        db.routines=db.routines.filter(r=>r.id!==input.id);await save();broadcast();return json(res,200,{ok:true});
+      }
+      if(url.pathname==='/api/routines/toggle'){
+        const routine=db.routines.find(r=>r.id===input.id);if(!routine)throw new Error('Routine not found.');
+        routine.enabled=!routine.enabled;routine.skips=0;routine.lastReason='';
+        routine.nextRun=routine.enabled?nextRun(routine.schedule):null;
+        if(routine.enabled&&routine.nextRun===null)throw new Error('This routine was scheduled to run once, at a time that has passed. Edit its schedule to use it again.');
+        await save();broadcast();return json(res,200,{ok:true,enabled:routine.enabled});
+      }
+      if(url.pathname==='/api/routines/run'){
+        const routine=db.routines.find(r=>r.id===input.id);if(!routine)throw new Error('Routine not found.');
+        const result=await fireRoutine(routine,{test:true});
+        if(result)throw new Error(result);
+        return json(res,200,{ok:true});
       }
       if(url.pathname==='/api/skills/save'){
         const fields=validateSkill(input),existing=db.skills.find(s=>s.id===input.id);

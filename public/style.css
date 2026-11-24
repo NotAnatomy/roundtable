@@ -114,3 +114,13 @@ body.hide-rooms .sidebar{overflow:hidden;min-width:0;padding-left:0;padding-righ
 /* Unread markers */
 .room-link.has-unread span:first-child{color:var(--rt-text);font-weight:600}
 .unread-dot{display:inline-grid;place-items:center;min-width:17px;height:17px;margin-left:var(--sp-1-5);padding:0 5px;border-radius:var(--r-full);background:var(--rt-accent-deep);color:var(--rt-accent);font-size:var(--t-xxs);font-weight:600;font-variant-numeric:tabular-nums;vertical-align:1px}
+
+/* Routines and secrets */
+#routine-count{color:var(--rt-text-3);font-variant-numeric:tabular-nums}
+.routine-chip{font-size:var(--t-xxs);color:var(--rt-accent);background:var(--rt-accent-deep);border-radius:var(--r-base);padding:2px var(--sp-1-5)}
+.upcoming-row{display:flex;flex-direction:column;gap:3px;padding:var(--sp-1-5) 0;border-bottom:1px solid var(--rt-border-4)}
+.upcoming-row strong{font-size:var(--t-xs)}
+.upcoming-row span{font-size:var(--t-xxs);color:var(--rt-text-3)}
+#routine-list .skill-card p,#secret-list .skill-card p{margin-top:4px}
+#secret-form input[name=name]{text-transform:uppercase}
+#room-secrets:empty+#room-secrets-note{display:none}
