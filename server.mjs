@@ -178,6 +178,10 @@ async function browserAct(job,input){
  broadcast();
  return redactAll(text);
 }
+// Native CLIs report a lost or unusable conversation in their own words. These are theirs, verbatim
+// enough to match without catching an ordinary model error.
+const STALE_SESSION=/no conversation found|conversation not found|session not found|no session|invalid session id|session id|--resume|this chat uses|does not match any session/i;
+const staleSession=e=>!e?.usage&&STALE_SESSION.test(String(e?.message||''));
 const TURN_LIMIT=10*60*1000,ROOM_CAP=50,activeRooms=()=>db.rooms.filter(r=>!r.archived).length;
 function startJob(target){if(jobs.has(target.id))throw new Error('This room is already replying.');
  for(const job of jobs.values())if(target.mode==='work'&&job.room.mode==='work'&&(target.allowEdits||job.room.allowEdits)&&overlap(target.workspace,job.room.workspace))throw new Error('Another room is using this project. Wait before starting overlapping project work.');
@@ -199,7 +203,7 @@ async function runGroup(target,speakers,job,retry=null){
   const browsing=['codex','claude'].includes(agent.provider)&&!!target.allowBrowser,browserPrompt=browsing?{logins:describeLogins(db.logins),local:target.mode==='work'}:null;
   try{fullPrompt=retry?.request.prompt||makePrompt(target,agent,db.skills,{},described,browserPrompt);prompt=retry?fullPrompt:makePrompt(target,agent,db.skills,native&&session&&after?{after}:{},described,browserPrompt);}catch(e){message(target,{id:'system',name:'Room'},safeError(e),'error','error');break;}
   if(!m)m=message(target,agent,'','streaming');else{m.attempts||=[];m.attempts.push({text:m.text,status:m.status,usage:m.usage,time:m.time});m.text='';m.status='streaming';m.kind='message';delete m.usage;delete m.tasks;delete m.browser;}
-  const tracker=createTaskTracker();
+  let tracker=createTaskTracker();
   const request=retry?.request||{prompt:fullPrompt,agent:structuredClone(agent),mode:target.mode,allowEdits:target.allowEdits,cwd,media:mediaRefs(target)};
   await fs.writeFile(path.join(requestDir,m.id+'.json'),JSON.stringify(request),{mode:0o600});
   const updates=deltaSender(emit);const update=()=>updates.push({roomId:target.id,id:m.id,text:m.text,activity:job.activity,activeAgent:agent.id,tasks:m.tasks||null});broadcast();
@@ -209,8 +213,21 @@ async function runGroup(target,speakers,job,retry=null){
   if(browsing){job.browserToken=randomBytes(24).toString('hex');job.browserActions=0;job.message=m;}
   const env=browsing?{...secretEnv(secrets),ROUNDTABLE_BROWSER_URL:`http://127.0.0.1:${port}`,ROUNDTABLE_BROWSER_TOKEN:job.browserToken}:secretEnv(secrets);
   try{const runner=agent.provider==='codex'?runCodex:agent.provider==='claude'?runClaude:agent.provider==='antigravity'?runAntigravity:runApi;
-   const result=await runner({provider:agent.provider,model:agent.model,effort:agent.effort,config:connections[agent.provider],prompt,session,cwd:request.cwd,signal:controller.signal,mode:request.mode,allowEdits:request.allowEdits,secrets:env,toolDir:browsing?toolDir:'',media:await mediaFiles.images(retry?request.media:mediaRefs(target,native&&session?after:null)),
+   const attempt=async use=>runner({provider:agent.provider,model:agent.model,effort:agent.effort,config:connections[agent.provider],prompt:use?prompt:fullPrompt,session:use,cwd:request.cwd,signal:controller.signal,mode:request.mode,allowEdits:request.allowEdits,secrets:env,toolDir:browsing?toolDir:'',media:await mediaFiles.images(retry?request.media:mediaRefs(target,native&&use?after:null)),
     onText:text=>{m.text=redactSecrets(text,secrets);update();},onActivity:text=>{job.activity=redactSecrets(text,secrets);update();},onEvent});
+   let result;
+   try{result=await attempt(session);}
+   catch(e){
+    // A native CLI can refuse the conversation we stored: it was deleted, or its provider changed
+    // underneath it. That is not the user's turn failing, so it runs once more as a new conversation
+    // with the full prompt, which is what Retry would have done by hand.
+    if(!session||!staleSession(e))throw e;
+    delete target.sessions[key];
+    m.text='';delete m.tasks;tracker=createTaskTracker();
+    job.activity='That saved session is gone. Starting a fresh one';update();
+    log(`fresh session for ${agent.name} in ${target.title}: ${safeError(e).split('\n')[0]}`);
+    result=await attempt(undefined);
+   }
    onEvent({type:'finish',ok:true});m.text=redactSecrets(result.text,secrets);m.status='complete';m.usage=result.usage;updates.flush();await fs.rm(path.join(requestDir,m.id+'.json'),{force:true});
    // Retry uses a fresh native session and cannot advance a later room checkpoint.
    if(result.session&&!retry)target.sessions[key]={id:result.session,through:m.id};await save();broadcast();

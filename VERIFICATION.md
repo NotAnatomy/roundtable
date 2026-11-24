@@ -1,6 +1,6 @@
-# Roundtable 0.10.0 verification
+# Roundtable 0.11.0 verification
 
-`npm test`: 66 passed, 0 failed. Tests make no paid model calls and no live GitHub calls.
+`npm test`: 67 passed, 0 failed. Tests make no paid model calls and no live GitHub calls.
 
 Coverage includes:
 
@@ -32,9 +32,13 @@ Coverage includes:
 - A real installed Chromium browser, driven headless: a page read with numbered elements, text typed through the real input pipeline and read back, a password typed by Roundtable that is absent from the page text and reported as `(filled)`, a submit that navigates and reports the page that arrived, history, a JPEG screenshot, and a stale ref from an earlier page refused rather than clicked. Skipped when no browser is installed, or with `ROUNDTABLE_TEST_BROWSER=0`.
 - The browser as an agent reaches it, on the real server: with browsing off the command is not on the agent's path and the prompt never mentions it; with browsing on the prompt carries the command list, the saved sign-in names and the untrusted-page rule but neither username nor password; the per-turn token is handed to the process, works during the turn and is refused after it; the window's own token is refused on that route; and the guards answer before a browser would be launched. Sign-in values are absent from the bootstrap state and the file holding them is mode 0600.
 
+- A refused native session on the real server: the first turn stores a session, the second is refused by the CLI, and the turn still answers. The attempt log shows resume, refusal, then a fresh conversation carrying the whole transcript, and the CLI's error never reaches the reply.
+
 Additional local check: PDF.js extracted known text and rasterized a real one-page PDF containing text and graphics. The check used the runtime's installed canvas library, not an application dependency. It caught missing modern-engine functionality; the bundled PDF.js legacy compatibility build resolved it.
 
 0.5.0 was also exercised in a local browser against a scratch data directory: the generated avatars rendered in the roster, Import from URL listed 20 skills from the public anthropics/skills repository in two GitHub API requests, the docx skill preview showed the scripts/ limitation with nine flagged lines and saved with that note, archive moved the room into the Archived section and created a replacement, the delete button stayed disabled until the exact title was typed, and delete closed both dialogs with no console errors at 1440px and 375px widths. Pressing Enter in the URL field was not exercised by the automation; the Fetch button was.
+
+0.11.0 browser check: a message sent while watching entered with the spec's rise-and-settle animation (computed animation-name confirmed on the live node), three thinking dots appeared while the reply was still empty, the user message rendered right-aligned in a bubble, and the conversation pane rendered rounded and inset over the chrome. One defect was found and fixed during this check: the per-message class is rewritten on every state update, which stripped the entrance class off the node that had just been given it.
 
 0.10.0 end-to-end check with a real browser: a fixture agent in a Work room ran `rtbrowse open` against a local test page, `rtbrowse login`, `rtbrowse read` and `rtbrowse type --submit`. Brave opened, Roundtable typed the saved username and password into the form, the agent's reply contained neither value, and the test site's own echo of them, both in the page text and in the resulting URL, came back redacted. The screenshot reached the Roundtable window as a JPEG. One defect was found and fixed during this check: the page address, which a site can put a typed value into, was stored with the reply and shown in the window without redaction.
 

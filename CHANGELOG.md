@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.11.0
+
+### Fixed
+
+- A native CLI that refuses the conversation Roundtable stored — deleted, or its provider changed underneath it — no longer ends the turn with the CLI's own error. The stored session is dropped and the turn runs once more as a new conversation with the full transcript, which is what pressing Retry did by hand.
+
+### Changed
+
+- The conversation took the shape the source design describes: your own messages sit on the right in a bubble, the agents stay as prose, and the conversation sits on a pane that floats above the window chrome instead of filling it edge to edge.
+- A reply arrives with the spec's entrance, rising 12 px and settling from 94 %, and only for messages that arrive while you are watching; opening a room no longer replays its history.
+- Three staggered dots while an agent has started and not yet said anything.
+- The press scale the design tokens already defined is now actually applied to buttons.
+- README rewritten for GitHub, with screenshots, captured by this release's own browser automation.
+
 ## 0.10.0
 
 ### Added

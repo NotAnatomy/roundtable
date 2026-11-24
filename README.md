@@ -1,6 +1,72 @@
-# Roundtable 0.10.0
+# Roundtable
 
-A local group chat with one to four agents. You send a message, each selected agent replies once in order, then the room stops until you send another message. Later speakers see earlier replies. A routine can send a message for you on a schedule, and the room then takes that same single turn. No autonomous continuation button or background conversation loop.
+**A group chat with one to four AI agents, running entirely on your Mac.** You send a message, each
+agent replies once, in order, and the room stops until you send another. Later speakers read the
+earlier replies, so it is one conversation rather than several private ones.
+
+![A room with two agents discussing an upload bug](docs/images/conversation.jpg)
+
+Codex and Claude Code run as the command-line tools you already have logged in. Gemini and
+AgentRouter join over their APIs with your own keys. Nothing is hosted: the app listens on
+127.0.0.1, your conversations live in `~/.roundtable`, and there is no build step and no
+`npm install` — Node 22 and the folder are the whole thing.
+
+## What it does
+
+- **One turn each.** No autonomous loops, no agents talking to each other while you are away.
+- **Lounge and Work rooms.** A Work room gets a project folder, read-only until you say otherwise.
+- **A real browser agents can drive** — and you can watch, and take the mouse from.
+- **Routines** that send a message you wrote on a schedule, and let the room take one ordinary turn.
+- **Secrets and sign-ins** that reach the work without reaching the model.
+- **Skills** — reusable instructions per agent, importable from any public Agent Skills repository.
+- Images and PDFs, dictation and read-aloud, a command palette, find in conversation, unread counts,
+  per-room archive, reset and delete, and usage and cost per reply.
+
+## Run it
+
+```bash
+npm start
+```
+
+Node.js 22 or newer. Open the private link it prints; a plain `localhost` address will not do, and a
+new link is printed each time the server starts. `Start-Roundtable.command` does the same by
+double-click.
+
+## A browser your agents drive, and you watch
+
+Turn **Browser** on for a room and Codex and Claude get a real Brave, Chrome or Edge window, in a
+profile of Roundtable's own. They drive it one step at a time with a command; every step answers with
+the page that resulted, and each step is recorded under the reply that took it.
+
+![A reply with the browser steps it took, and the live page in the side panel](docs/images/browsing.jpg)
+
+The window is visible on purpose. Watching it, and grabbing the mouse whenever you like, is the
+review step an unattended click would otherwise never get.
+
+![The Browser panel, with saved sign-ins](docs/images/browser.jpg)
+
+Saved sign-ins are typed into the page **by Roundtable**, and only when the page in front of the
+browser is that exact site. The agent is told the name and the site, never the username or the
+password, and both are stripped out of anything it reports back. Codes sent to your phone stay yours
+to type.
+
+## Routines
+
+A message you wrote, sent to a room on a schedule, after which the room takes the same single turn it
+would take for you. Repeating, daily with a weekday filter, or once.
+
+![The Routines panel with a weekday standup](docs/images/routines.jpg)
+
+A room that allows project edits cannot carry a routine: nobody is there to approve a change.
+
+## Rooms
+
+Each room holds its own agents, their jobs and instructions, its shared notes, its project folder and
+its permissions.
+
+![Room settings, with two agents and their reply order](docs/images/settings.jpg)
+
+---
 
 ## Update on your Mac
 
