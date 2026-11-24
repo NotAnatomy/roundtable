@@ -22,12 +22,71 @@ test('delta touches only its message, ignores background rooms and preserves sel
  const node={contains:()=>true},other={};let writes=0,status='';const state={id:'a',agents:[{id:'codex',name:'Codex'}],messages:[{id:'reply',text:''}]},rendered=new Map([['reply',{text:node}],['other',other]]);const hooks={write:(n,t)=>{assert.equal(n,node);writes++;},status:t=>status=t};const delta={roomId:'a',id:'reply',text:'Hi',activeAgent:'codex'};
  assert.equal(applyDelta({...delta,roomId:'b'},state,rendered,hooks),false);assert.equal(writes,0);applyDelta(delta,state,rendered,hooks);assert.equal(writes,1);assert.equal(state.messages[0].text,'Hi');assert.equal(rendered.get('other'),other);assert.match(status,/Codex/);applyDelta({...delta,text:'More'},state,rendered,{...hooks,selection:{isCollapsed:false,anchorNode:node}});assert.equal(writes,1);assert.equal(rendered.get('reply').deferred,'More');
 });
-import {avatarMarkup,avatarSVG,avatarShape} from '../public/avatar.mjs';
-test('generated avatars are deterministic per agent, differ between agents and load nothing external',()=>{
+import {avatarMarkup,avatarSVG,avatarShape,blobPath,avatarState,SILHOUETTES} from '../public/avatar.mjs';
+test('agent characters are deterministic per agent, differ between agents and reference nothing external',()=>{
  const a={id:'codex_a1b2c3',name:'Codex',provider:'codex'},b={id:'claude_9f8e7d',name:'Codex',provider:'codex'};
- assert.deepEqual(avatarMarkup(a),avatarMarkup(a));assert.notDeepEqual(avatarMarkup(a),avatarMarkup(b));
- const serialized=JSON.stringify([avatarMarkup(a),avatarMarkup(b)]);assert.ok(!/"tag":"image"|href|url\(|http/.test(serialized));
- assert.equal(avatarShape(a).initial,'C');assert.equal(avatarShape({id:'x',name:'  élan'}).initial,'É');assert.ok(avatarShape(a).segments>=3&&avatarShape(a).segments<=6);
+ // The gradient id is unique per instance by design, so determinism is compared at a fixed id.
+ assert.deepEqual(avatarMarkup(a,'g'),avatarMarkup(a,'g'));assert.notDeepEqual(avatarMarkup(a,'g'),avatarMarkup(b,'g'));
+ assert.notEqual(JSON.stringify(avatarMarkup(a)).match(/"id":"(rt-av-\d+)"/)[1],JSON.stringify(avatarMarkup(a)).match(/"id":"(rt-av-\d+)"/)[1]);
+ const serialized=JSON.stringify([avatarMarkup(a,'g'),avatarMarkup(b,'g')]);
+ assert.ok(!/"tag":"image"|href|http|url\((?!#)/.test(serialized));
+ assert.equal(avatarShape(a).colors.from,'#7fd9a6');assert.equal(avatarShape({id:'x'}).colors,avatarShape({id:'x',provider:'nope'}).colors);
+ // Every silhouette must close and stay inside the 32px box.
+ for(const shape of SILHOUETTES){const d=blobPath(shape);assert.match(d,/^M[\d.]+ [\d.]+C/);assert.ok(d.endsWith('Z'));
+  const nums=d.match(/[\d.]+/g).map(Number);assert.ok(Math.min(...nums)>=1&&Math.max(...nums)<=31,shape.name);}
  const made=[];const stubDoc={createElementNS:(ns,tag)=>{const n={ns,tag,attrs:{},children:[],setAttribute(k,v){this.attrs[k]=v;},append(c){this.children.push(c);}};made.push(n);return n;},createTextNode:t=>({text:t})};
- const svg=avatarSVG(a,stubDoc);assert.equal(svg.tag,'svg');assert.ok(made.every(n=>n.ns==='http://www.w3.org/2000/svg'));assert.ok(svg.children.some(n=>n.tag==='g'&&n.attrs.class==='ring'));assert.equal(svg.children.at(-1).children[0].text,'C');
+ const svg=avatarSVG(a,stubDoc,'g');assert.equal(svg.tag,'svg');assert.ok(made.every(n=>n.ns==='http://www.w3.org/2000/svg'));
+ assert.equal(made.filter(n=>n.tag==='circle'&&n.attrs.class===undefined).length,2);
+ assert.equal(svg.children[1].attrs.class,'rt-tilt');assert.equal(svg.children[1].children[0].attrs.class,'rt-body');
+});
+test('avatar lifecycle state follows the room and the agent, not the other way round',()=>{
+ assert.equal(avatarState({}),'idle');
+ assert.equal(avatarState({busy:true}),'thinking');
+ assert.equal(avatarState({busy:true,active:true}),'working');
+ assert.equal(avatarState({busy:true,active:true,status:'streaming'}),'streaming');
+ assert.equal(avatarState({status:'complete'}),'done');
+ for(const status of ['error','interrupted'])assert.equal(avatarState({status}),'failed');
+ assert.equal(avatarState({archived:true,busy:true,active:true}),'sleeping');
+ assert.equal(avatarState({enabled:false}),'sleeping');
+});
+
+import {score,matchCommands,findRanges} from '../public/palette.mjs';
+test('palette ranks a prefix over a word start over a loose subsequence, and keeps ties in listed order',()=>{
+ assert.ok(score('new','New room')>score('room','New room'));
+ assert.ok(score('room','New room')>score('oom','New room'));
+ assert.ok(score('nr','New room')>=0&&score('zz','New room')<0);
+ assert.equal(score('','anything'),0);
+ const commands=[{title:'Archive this room'},{title:'New room',hint:'Start fresh'},{title:'Reset this conversation'},{title:'Delete this room'}];
+ assert.deepEqual(matchCommands('new',commands).map(c=>c.title),['New room']);
+ assert.deepEqual(matchCommands('room',commands).map(c=>c.title),['Archive this room','New room','Delete this room']);
+ // An empty query keeps the given order so the palette opens on a stable list.
+ assert.deepEqual(matchCommands('',commands).map(c=>c.title),commands.map(c=>c.title));
+ // A hit in the hint ranks below any hit in a title.
+ assert.deepEqual(matchCommands('fresh',commands).map(c=>c.title),['New room']);
+ assert.deepEqual(matchCommands('zzz',commands),[]);
+});
+test('find returns every non-overlapping match, case-insensitively',()=>{
+ assert.deepEqual(findRanges('aXa xa AXA','xa'),[[1,3],[4,6],[8,10]]);
+ assert.deepEqual(findRanges('aaaa','aa'),[[0,2],[2,4]]);
+ assert.deepEqual(findRanges('abc',''),[]);assert.deepEqual(findRanges('',  'a'),[]);assert.deepEqual(findRanges(null,'a'),[]);
+});
+import {SeenStore,unreadCount,finishedElsewhere} from '../public/client-state.mjs';
+test('unread counts ignore the open room, survive reload and never go negative',()=>{
+ const data=new Map(),storage={getItem:k=>data.get(k),setItem:(k,v)=>data.set(k,v)},store=new SeenStore(storage);
+ store.set('a',3);
+ assert.equal(unreadCount({id:'a',count:5},{get:id=>store.get(id),selectedId:'b'}),2);
+ assert.equal(unreadCount({id:'a',count:5},{get:id=>store.get(id),selectedId:'a'}),0);
+ // A room never opened starts read, so an existing install does not light up every row at once.
+ assert.equal(unreadCount({id:'new',count:8},{get:id=>store.get(id),selectedId:'b'}),0);
+ // A reset room holds fewer messages than were seen; that is zero unread, not a negative badge.
+ assert.equal(unreadCount({id:'a',count:0},{get:id=>store.get(id),selectedId:'b'}),0);
+ assert.equal(new SeenStore(storage).get('a'),3);
+ data.set('roundtable-seen','broken');assert.equal(new SeenStore(storage).size,0);
+});
+test('only background rooms that just stopped replying are announced',()=>{
+ const before=[{id:'a',busy:true},{id:'b',busy:true},{id:'c',busy:false},{id:'d',busy:true}];
+ const after=[{id:'a',busy:false},{id:'b',busy:true},{id:'c',busy:false},{id:'d',busy:false}];
+ assert.deepEqual(finishedElsewhere(before,after,'d').map(r=>r.id),['a']);
+ assert.deepEqual(finishedElsewhere([],after,'x'),[]);
+ assert.deepEqual(finishedElsewhere(before,[{id:'e',busy:false}],'x'),[]);
 });

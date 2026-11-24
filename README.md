@@ -1,4 +1,4 @@
-# Roundtable 0.7.0
+# Roundtable 0.8.0
 
 A local group chat with one to four agents. You send a message, each selected agent replies once in order, then the room stops until you send another message. Later speakers see earlier replies. No autonomous continuation button or background conversation loop.
 
@@ -86,6 +86,40 @@ The conversation now renders Markdown lists, emphasis, headings, tables, links a
 The interface now has a room search, a context sidebar, readable mention labels and a composer plus menu. Use + to attach images, PDFs, text/code, open Skills, add an agent or edit notes. Drafts and pending file references survive room switches and page reloads using browser localStorage. Clearing browser storage removes these drafts.
 
 Agent avatars are generated inline SVG marks derived from each agent ID, tinted by provider, so the same agent looks the same in every room and no image is loaded. The ring turns slowly only while that agent is replying and is desaturated when its last reply failed or was interrupted; both respect the reduced motion setting. macOS system dictation also works in the composer; set its shortcut in System Settings, Keyboard, Dictation.
+
+## Agent characters
+
+Each agent is drawn as a small character: one of eight silhouettes picked from its ID, a two-stop gradient from its provider, and two eyes. The character reacts to what the agent is actually doing. It breathes and blinks while idle, sways with narrowed eyes while thinking, bobs while a tool runs, pulses while text streams, hops once when a reply lands, desaturates when a reply failed, and closes its eyes in an archived room or when a participant is disabled. Nothing is loaded from outside the page and nothing animates in an idle room. The motion is CSS driven by one state attribute, so your system's reduced-motion setting or the Reduce motion preference stops all of it.
+
+## Command palette, find and shortcuts
+
+Press the command key with K for a palette over rooms, skills and actions: create, settings, skills, connections, preferences, export, notes, reset, archive, delete. Type to filter, arrows to move, Enter to run.
+
+| Action | Keys |
+|---|---|
+| Command palette | ⌘K |
+| New room | ⌘N |
+| Room settings | ⌘, |
+| Skills | ⌘⇧W |
+| Focus the composer | ⌘I |
+| Find in conversation | ⌘F |
+| Dictate | ⌘⇧M |
+| Toggle the room list | ⌘B |
+| Toggle room details | ⌘⌥B |
+| Go to room 1 to 9 | ⌘1 … ⌘9 |
+| Previous / next room | ⌥↑ / ⌥↓ |
+| Keyboard shortcuts | ⌘/ |
+| Close anything open | Esc |
+
+Find in conversation searches the message text the server sent rather than the rendered nodes, so Markdown structure and a streaming reply cannot desynchronise the matches. It reports a position in the match list and flashes the message it scrolls to.
+
+## Unread rooms and notifications
+
+A room you are not looking at shows a count of messages added since you last had it open. The marker is per browser. A room you have never opened starts read, so an existing install does not light up every row at once, and a room that was reset never shows a negative count. Preferences can also show a desktop notification when a background room finishes a turn; the browser asks for permission the first time you turn it on, and the preference stays off if it is refused.
+
+## Reset a conversation
+
+Reset clears a room's messages and pins and drops its native sessions, while agents, skills, shared notes, project folder and mode stay exactly as they were. Attachments only that room referenced are deleted with it; anything another room still uses is kept. A room that is replying refuses to reset.
 
 ## Task list
 

@@ -1,12 +1,13 @@
-import {DraftStore,switchDraft,finishSend,appendFiles,applyDelta} from './client-state.mjs';
+import {DraftStore,switchDraft,finishSend,appendFiles,applyDelta,SeenStore,unreadCount,finishedElsewhere} from './client-state.mjs';
 import {prepareFile} from './attachments.mjs';
 import {renderMarkdown} from './markdown.mjs';
-import {avatarSVG} from './avatar.mjs';
+import {avatarSVG,avatarState} from './avatar.mjs';
+import {matchCommands,findRanges} from './palette.mjs';
 import * as dictation from './dictation.mjs';
 import {createBackdrop,loadPrefs,savePrefs} from './backdrop.mjs';
 import {renderTaskList,countDone} from './tasklist.mjs';
 const $=s=>document.querySelector(s);
-let state,token,stream,editingAgents=[],rendered=new Map(),lastPeople='',toastTimer,creating=false,pendingFiles=[],drafts=new DraftStore(window.localStorage),sending=false;
+let state,token,stream,editingAgents=[],rendered=new Map(),lastPeople='',toastTimer,creating=false,pendingFiles=[],drafts=new DraftStore(window.localStorage),sending=false,seen=new SeenStore(window.localStorage),lastRooms=[];
 function el(tag,cls,text){const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;}
 function toast(text){const host=document.querySelector('dialog[open]')||document.body;host.append($('#toast'));$('#toast').textContent=text;$('#toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').hidden=true,7000);}
 async function api(route,body){const res=await fetch('/api/'+route,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json','X-Roundtable-Token':token},...(body===undefined?{}:{body:JSON.stringify({roomId:state?.id,...body})})});const value=await res.json();if(!res.ok){const e=new Error(value.error||'Request failed');e.details=value.details;throw e;}return value;}
@@ -20,6 +21,8 @@ function render(s){
  if(!state||state.id!==s.id){const draft=switchDraft(drafts,state?.id,s.id,{text:$('#message').value,files:pendingFiles});$('#message').value=draft?.text||'';pendingFiles=draft?.files||[];}
  const changed=state?.id!==s.id;
  state=s;if(changed)renderPending();$('#app-version').textContent='v'+s.version;
+ for(const room of finishedElsewhere(lastRooms,s.rooms,s.id))notifyFinished(room);
+ lastRooms=s.rooms;seen.set(s.id,s.messages.length);
  $('#room-title').textContent=s.title;renderRooms();
  const area=$('#messages'),atBottom=area.scrollHeight-area.scrollTop-area.clientHeight<110;
  $('#empty').hidden=!!s.messages.length;
@@ -31,7 +34,7 @@ function render(s){
    const copy=el('button','','Copy');copy.onclick=()=>navigator.clipboard.writeText(v.last||'').then(()=>toast('Copied')).catch(()=>toast('Select the text to copy it.'));tools.append(copy);const pin=el('button','','Pin');pin.type='button';pin.onclick=()=>api('pins',{id:m.id}).catch(e=>toast(e.message));tools.append(pin);
    const retry=el('button','','Retry');retry.onclick=()=>api('retry',{id:m.id}).catch(e=>toast(e.message));tools.append(retry);const listen=el('button','','Listen');listen.type='button';listen.onclick=()=>toggleSpeech(m.id,listen);tools.append(listen);const usage=el('small','usage');const files=el('div','message-attachments');content.append(head,tasks,text,files,usage,tools);node.append(avatar,content);$('#thread').append(node);v={node,avatar,text,badge,pin,retry,listen,usage,files,tasks,tasksSummary,tasksBody,last:null};rendered.set(m.id,v);
  }
- v.node.className='message '+m.status+(!m.agentId?' user-message':'');renderMessageTasks(v,m);v.avatar.classList.toggle('replying',m.status==='streaming');v.avatar.classList.toggle('faded',['error','interrupted'].includes(m.status));v.pin.hidden=m.status!=='complete'||m.kind==='error';v.pin.disabled=false;v.retry.hidden=!m.agentId||!['error','interrupted'].includes(m.status);v.listen.hidden=!m.agentId||m.status!=='complete'||m.kind==='error'||!s.voice?.ready;v.retry.disabled=s.busy;v.usage.textContent=usageText(m.usage);v.pin.setAttribute('aria-pressed',String((s.pinnedMessageIds||[]).includes(m.id)));v.pin.textContent=(s.pinnedMessageIds||[]).includes(m.id)?'Pinned':'Pin';v.badge.textContent=m.status==='streaming'?'replying':m.status==='interrupted'?'interrupted':m.kind==='error'?'connection issue':'';
+ v.node.className='message '+m.status+(!m.agentId?' user-message':'');renderMessageTasks(v,m);if(m.agentId)v.avatar.dataset.state=avatarState({busy:m.status==='streaming',active:true,status:m.status});v.pin.hidden=m.status!=='complete'||m.kind==='error';v.pin.disabled=false;v.retry.hidden=!m.agentId||!['error','interrupted'].includes(m.status);v.listen.hidden=!m.agentId||m.status!=='complete'||m.kind==='error'||!s.voice?.ready;v.retry.disabled=s.busy;v.usage.textContent=usageText(m.usage);v.pin.setAttribute('aria-pressed',String((s.pinnedMessageIds||[]).includes(m.id)));v.pin.textContent=(s.pinnedMessageIds||[]).includes(m.id)?'Pinned':'Pin';v.badge.textContent=m.status==='streaming'?'replying':m.status==='interrupted'?'interrupted':m.kind==='error'?'connection issue':'';
  if(v.last!==m.text){const selection=window.getSelection();if(selection&&!selection.isCollapsed&&v.text.contains(selection.anchorNode))v.deferred=m.text||'';else {safeText(v.text,m.text||'');delete v.deferred;}v.last=m.text;v.files.replaceChildren();for(const f of m.attachments||[]){const b=el('button','file-chip',f.name);b.title=f.mime?'Download '+f.mime+(f.pages?' · '+f.pages+' page(s)':''):'Download shared text';b.onclick=async()=>{try{if(f.id){const r=await fetch('/api/files/'+f.id,{headers:{'X-Roundtable-Token':token}});if(!r.ok)throw new Error('File is unavailable.');download(f.name,await r.blob());}else download(f.name,f.text);}catch(e){toast(e.message);}};v.files.append(b);}}
  }
  if(atBottom)area.scrollTop=area.scrollHeight;
@@ -45,7 +48,7 @@ function render(s){
  $('#member-count').textContent=s.agents.filter(a=>a.enabled).length+' agents';$('#notes-dot').textContent=s.notes?'•':'';
  const lastStatus=a=>s.messages.findLast(m=>m.agentId===a.id)?.status||'';
  const peopleKey=JSON.stringify([s.agents,s.activeAgent,s.busy,s.skills,s.agents.map(lastStatus)]);if(peopleKey!==lastPeople){lastPeople=peopleKey;$('#people').replaceChildren();const target=$('#target').value;$('#target').replaceChildren(new Option('Everyone','all'));
-   for(const a of s.agents.filter(a=>a.enabled)){const person=el('div','person'+(a.id===s.activeAgent?' active':'')),av=agentAvatar(a,a.name),info=el('div');av.classList.toggle('replying',s.busy&&s.activeAgent===a.id);av.classList.toggle('faded',['error','interrupted'].includes(lastStatus(a)));info.append(el('div','person-name',a.name),el('div','person-role',a.role+' · @'+a.id),el('div','person-role',providerNames[a.provider]+' · '+(a.model||'Default model')));for(const id of a.skillIds||[]){const skill=s.skills.find(s=>s.id===id);if(skill)info.append(el('span','skill-chip',skill.name));}person.append(av,info);$('#people').append(person);$('#target').append(new Option(a.name,a.id));}if([...$('#target').options].some(o=>o.value===target))$('#target').value=target;
+   for(const a of s.agents.filter(a=>a.enabled)){const person=el('div','person'+(a.id===s.activeAgent?' active':'')),av=agentAvatar(a,a.name),info=el('div');av.dataset.state=avatarState({busy:s.busy,active:s.activeAgent===a.id,status:lastStatus(a),archived:s.archived});info.append(el('div','person-name',a.name),el('div','person-role',a.role+' · @'+a.id),el('div','person-role',providerNames[a.provider]+' · '+(a.model||'Default model')));for(const id of a.skillIds||[]){const skill=s.skills.find(s=>s.id===id);if(skill)info.append(el('span','skill-chip',skill.name));}person.append(av,info);$('#people').append(person);$('#target').append(new Option(a.name,a.id));}if([...$('#target').options].some(o=>o.value===target))$('#target').value=target;
  }
  renderContext();renderWorking(s);
 }
@@ -127,13 +130,34 @@ async function toggleSpeech(id,button){if(speech.id===id){stopSpeech();return;}s
  catch(e){stopSpeech();toast(e.message);}finally{button.disabled=false;}}
 // Appearance preferences live in this browser; the backdrop is created lazily and removed entirely when switched off.
 let prefs=loadPrefs(window.localStorage),backdrop=null;
-function applyPrefs(){if(prefs.backdrop){backdrop||=createBackdrop();if(backdrop.supported)backdrop.start();$('#backdrop-note').hidden=backdrop.supported;}else if(backdrop){backdrop.remove();backdrop=null;}$('#pref-backdrop').checked=prefs.backdrop;}
-$('#prefs-btn').onclick=()=>{$('#pref-backdrop').checked=prefs.backdrop;$('#preferences').showModal();};$('#close-prefs').onclick=()=>$('#preferences').close();
+function applyPrefs(){if(prefs.backdrop){backdrop||=createBackdrop();if(backdrop.supported)backdrop.start();$('#backdrop-note').hidden=backdrop.supported;}else if(backdrop){backdrop.remove();backdrop=null;}
+ document.documentElement.dataset.motion=prefs.motion==='reduced'?'reduced':'';
+ for(const [id,on]of [['#pref-backdrop',prefs.backdrop],['#pref-motion',prefs.motion==='reduced'],['#pref-notify',prefs.notify]])$(id).checked=on;
+ $('#notify-note').textContent=!('Notification'in window)?'This browser cannot show desktop notifications.':Notification.permission==='denied'?'Your browser is blocking notifications for this page. Allow them in its site settings first.':'A desktop notification when a room you are not looking at finishes a turn. Your browser asks for permission the first time.';}
+$('#prefs-btn').onclick=()=>{applyPrefs();$('#preferences').showModal();};$('#close-prefs').onclick=()=>$('#preferences').close();
 $('#pref-backdrop').onchange=e=>{prefs={...prefs,backdrop:e.target.checked};savePrefs(window.localStorage,prefs);applyPrefs();};
+$('#pref-motion').onchange=e=>{prefs={...prefs,motion:e.target.checked?'reduced':'system'};savePrefs(window.localStorage,prefs);applyPrefs();};
+$('#pref-notify').onchange=async e=>{
+ let on=e.target.checked;
+ // Asking only when the box is ticked keeps the permission prompt tied to a deliberate action.
+ if(on&&'Notification'in window&&Notification.permission==='default'){try{on=await Notification.requestPermission()==='granted';}catch{on=false;}}
+ if(on&&(!('Notification'in window)||Notification.permission!=='granted')){on=false;toast('Your browser did not allow notifications.');}
+ prefs={...prefs,notify:on};savePrefs(window.localStorage,prefs);applyPrefs();};
 try{applyPrefs();}catch(e){console.warn('Backdrop disabled:',e.message);$('#backdrop-note').hidden=false;}
+// A room the user is not looking at has finished its turn. Notifying is opt-in and silent on failure:
+// a blocked or unsupported Notification must never interrupt the conversation.
+function notifyFinished(room){
+ if(!prefs.notify||!('Notification'in window)||Notification.permission!=='granted')return;
+ try{
+  const note=new Notification(room.title,{body:`${room.agents} agent${room.agents>1?'s':''} finished replying.`,tag:'roundtable-'+room.id,silent:true});
+  note.onclick=()=>{window.focus();api('rooms/select',{id:room.id}).catch(()=>{});note.close();};
+ }catch{}
+}
 function exportName(title){return (title.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')||'roundtable')+'-conversation.md';}
 function download(name,text){const a=el('a');a.href=URL.createObjectURL(text instanceof Blob?text:new Blob([text],{type:'text/plain;charset=utf-8'}));a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);}
-function roomLink(r){const row=el('div','room-row'),b=el('button','room-link'+(r.id===state.id?' selected':''));b.append(el('span','',r.title),el('small','',`${r.agents} agents · ${r.busy?'Replying…':r.count+' messages'}`));b.title=r.busy?'Agents are replying in this room':'';b.onclick=()=>api('rooms/select',{id:r.id}).then(()=>document.body.classList.remove('show-rooms')).catch(e=>toast(e.message));const more=el('button','room-more','⋯');more.type='button';more.setAttribute('aria-label','Options for '+r.title);more.setAttribute('aria-haspopup','menu');more.setAttribute('aria-expanded','false');more.onclick=e=>{e.stopPropagation();if($('#room-menu').dataset.anchor===r.id&&!$('#room-menu').hidden)closeRoomMenu();else openRoomMenu(more,r);};row.append(b,more);return row;}
+function roomLink(r){const row=el('div','room-row'),b=el('button','room-link'+(r.id===state.id?' selected':''));const unread=unreadCount(r,{get:id=>seen.get(id),selectedId:state.id});
+ const title=el('span','',r.title);if(unread)title.append(el('b','unread-dot',unread>9?'9+':String(unread)));
+ b.append(title,el('small','',`${r.agents} agents · ${r.busy?'Replying…':r.count+' messages'}`));b.classList.toggle('has-unread',!!unread);b.title=r.busy?'Agents are replying in this room':unread?`${unread} new message${unread>1?'s':''}`:'';b.onclick=()=>api('rooms/select',{id:r.id}).then(()=>document.body.classList.remove('show-rooms')).catch(e=>toast(e.message));const more=el('button','room-more','⋯');more.type='button';more.setAttribute('aria-label','Options for '+r.title);more.setAttribute('aria-haspopup','menu');more.setAttribute('aria-expanded','false');more.onclick=e=>{e.stopPropagation();if($('#room-menu').dataset.anchor===r.id&&!$('#room-menu').hidden)closeRoomMenu();else openRoomMenu(more,r);};row.append(b,more);return row;}
 function renderRooms(){const query=$('#room-search').value.toLowerCase(),shown=state.rooms.filter(r=>r.title.toLowerCase().includes(query)),archived=shown.filter(r=>r.archived);$('#room-list').replaceChildren(...shown.filter(r=>!r.archived).map(roomLink));$('#archived-list').replaceChildren(...archived.map(roomLink));$('#archived-rooms').hidden=!archived.length;$('#archived-count').textContent=`(${archived.length})`;if(state.archived)$('#archived-rooms').open=true;}
 $('#room-search').oninput=renderRooms;
 function renderContext(){const s=state;let stats=$('#context-stats');if(!stats){stats=el('p','help');stats.id='context-stats';$('#notes-preview').after(stats);const next=el('button','','Continue in a new room');next.onclick=async()=>{const notes=prompt('Decisions and next steps to carry forward',state.notes);if(notes)try{await api('rooms/continue',{notes});}catch(e){toast(e.message);}};stats.after(next);}stats.textContent=[usageText(s.usage),s.capacity?.used>s.capacity?.limit*.75?`${s.capacity.used.toLocaleString()} / ${s.capacity.limit.toLocaleString()} context characters`:null].filter(Boolean).join(' · ');$('#notes-preview').textContent=s.notes||'Add goals, preferences or project context for everyone.';$('#pins').replaceChildren();for(const m of s.messages.filter(m=>(s.pinnedMessageIds||[]).includes(m.id))){const b=el('button','pin-item');b.append(el('strong','',m.speaker),document.createTextNode(m.text.slice(0,140)+(m.text.length>140?'...':'')));b.onclick=()=>{rendered.get(m.id)?.node.scrollIntoView({block:'center',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'});document.body.classList.remove('show-context');};$('#pins').append(b);}$('#turn-roster').replaceChildren();for(const [i,a]of s.agents.filter(a=>a.enabled).entries())$('#turn-roster').append(el('span','turn-person'+(s.activeAgent===a.id?' active':''),`${i+1}. ${a.name}`));}
@@ -165,6 +189,114 @@ $('#create-skill').onclick=()=>editSkill();$('#cancel-skill').onclick=()=>{$('#s
 $('#skill-form').onsubmit=async e=>{e.preventDefault();const f=e.target;try{await api('skills/save',Object.fromEntries(new FormData(f)));state=(await api('bootstrap')).state;f.hidden=true;renderSkills();toast('Skill saved. Assign it in an agent’s settings.');}catch(e){toast(e.message);}};
 $('#import-skill').onclick=()=>$('#skill-import-input').click();$('#skill-import-input').onchange=async e=>{try{const file=e.target.files[0];if(!file)return;if(file.size>48000)throw new Error('Import a Markdown file under 12,000 characters.');const text=await file.text();if(text.length>12000||text.includes('\0'))throw new Error('Import a text Markdown file under 12,000 characters.');const front=text.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);const name=front?.[1].match(/^name:\s*(.+)$/m)?.[1]?.replace(/^['"]|['"]$/g,'')||file.name.replace(/\.(md|txt)$/i,'');editSkill({name:name.slice(0,64),description:'Imported instructions. Review before saving.',instructions:front?text.slice(front[0].length):text});}catch(e){toast(e.message);}finally{e.target.value='';}};
 function usageText(u){if(!u)return '';return [u.inputTokens!==undefined?u.inputTokens.toLocaleString()+' in':null,u.outputTokens!==undefined?u.outputTokens.toLocaleString()+' out':null,u.costUsd!==undefined?'$'+u.costUsd.toFixed(4)+' provider estimate':null].filter(Boolean).join(' / ');}
+// ---- Find in conversation -------------------------------------------------
+// Matches come from the message text the server sent, not from rendered nodes, so
+// Markdown structure and streaming updates cannot desynchronise the match list.
+const find={open:false,hits:[],at:0};
+function findMatches(){
+ const query=$('#find-input').value.trim();find.hits=[];
+ if(query&&state)for(const m of state.messages)for(const hit of findRanges(m.text||'',query))find.hits.push({id:m.id,start:hit[0]});
+ find.at=Math.min(find.at,Math.max(0,find.hits.length-1));
+ $('#find-count').textContent=query?(find.hits.length?`${find.at+1} of ${find.hits.length}`:'No matches'):'';
+ for(const b of ['#find-prev','#find-next'])$(b).disabled=find.hits.length<2;
+ if(find.hits.length)revealMatch();
+}
+function revealMatch(){
+ const hit=find.hits[find.at];if(!hit)return;const v=rendered.get(hit.id);if(!v)return;
+ v.node.scrollIntoView({block:'center',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'});
+ v.node.classList.remove('flash');void v.node.offsetWidth;v.node.classList.add('flash');
+}
+function stepMatch(delta){if(!find.hits.length)return;find.at=(find.at+delta+find.hits.length)%find.hits.length;$('#find-count').textContent=`${find.at+1} of ${find.hits.length}`;revealMatch();}
+function openFind(){find.open=true;$('#find-bar').hidden=false;$('#find-input').select();$('#find-input').focus();findMatches();}
+function closeFind(){find.open=false;$('#find-bar').hidden=true;for(const v of rendered.values())v.node.classList.remove('flash');$('#message').focus();}
+$('#find-input').addEventListener('input',()=>{find.at=0;findMatches();});
+$('#find-input').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();stepMatch(e.shiftKey?-1:1);}if(e.key==='Escape'){e.preventDefault();closeFind();}});
+$('#find-next').onclick=()=>stepMatch(1);$('#find-prev').onclick=()=>stepMatch(-1);$('#find-close').onclick=closeFind;
+
+// ---- Command palette ------------------------------------------------------
+const palette={items:[],at:0};
+function paletteCommands(){
+ const s=state,out=[];
+ const action=(title,hint,run,enabled=true)=>{if(enabled)out.push({title,hint,run});};
+ action('New room','Choose participants and start fresh',()=>openSettings(undefined,true));
+ action('Room settings','Agents, mode, notes and project access',()=>openSettings(),!s?.busy);
+ action('Skills','Create, import or assign reusable instructions',openSkills);
+ action('Connections','Check CLIs and API keys',()=>{$('#connections').showModal();void connections();});
+ action('Preferences','Background, motion and notifications',()=>$('#preferences').showModal());
+ action('Find in conversation','Search this room’s messages',openFind);
+ action('Export conversation','Download this room as Markdown',exportRoom);
+ action('Edit shared notes','Context every agent sees',()=>$('#notes-btn').click());
+ action('Reset this conversation','Clear the messages, keep agents and notes',resetRoom,!s?.busy&&!!s?.messages.length);
+ action(s?.archived?'Unarchive this room':'Archive this room','Keeps every message',()=>toggleArchive(),!s?.busy);
+ action('Delete this room…','Permanent, asks you to confirm',()=>askDelete(),!s?.busy);
+ action('Toggle the room list','',toggleRooms);
+ action('Keyboard shortcuts','',openShortcuts);
+ for(const r of s?.rooms||[])if(r.id!==s.id)out.push({title:r.title,hint:(r.archived?'Archived room':'Room')+` · ${r.count} messages`,group:'room',run:()=>api('rooms/select',{id:r.id})});
+ for(const skill of s?.skills||[])out.push({title:skill.name,hint:'Skill · '+(skill.description||'Edit instructions'),group:'skill',run:()=>{openSkills();editSkill(skill);}});
+ return out;
+}
+function renderPalette(){
+ const list=$('#palette-list');palette.items=matchCommands($('#palette-input').value,paletteCommands());
+ palette.at=Math.min(palette.at,Math.max(0,palette.items.length-1));list.replaceChildren();
+ if(!palette.items.length){list.append(el('p','help palette-empty','Nothing matches that.'));return;}
+ palette.items.forEach((item,i)=>{
+  const row=el('button','palette-row'+(i===palette.at?' active':''));row.type='button';row.setAttribute('role','option');row.setAttribute('aria-selected',String(i===palette.at));
+  row.append(el('span','palette-kind',item.group==='room'?'●':item.group==='skill'?'◇':'›'),el('span','palette-title',item.title));
+  if(item.hint)row.append(el('span','palette-hint',item.hint));
+  row.onmousemove=()=>{if(palette.at!==i){palette.at=i;renderPalette();}};
+  row.onclick=()=>runPalette(i);list.append(row);
+ });
+ list.children[palette.at]?.scrollIntoView({block:'nearest'});
+}
+function runPalette(i){const item=palette.items[i];if(!item)return;$('#palette').close();Promise.resolve().then(item.run).catch(e=>toast(e.message));}
+function openPalette(){if($('#palette').open)return;palette.at=0;$('#palette-input').value='';renderPalette();$('#palette').showModal();$('#palette-input').focus();}
+$('#palette-input').addEventListener('input',()=>{palette.at=0;renderPalette();});
+$('#palette-input').addEventListener('keydown',e=>{
+ if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();if(!palette.items.length)return;palette.at=(palette.at+(e.key==='ArrowDown'?1:-1)+palette.items.length)%palette.items.length;renderPalette();}
+ if(e.key==='Enter'){e.preventDefault();runPalette(palette.at);}
+});
+
+// ---- Shortcuts ------------------------------------------------------------
+const MOD=navigator.platform.toLowerCase().includes('mac')?'⌘':'Ctrl';
+const SHORTCUTS=[
+ ['Command palette',MOD+'K'],['New room',MOD+'N'],['Room settings',MOD+','],['Skills',MOD+'⇧W'],
+ ['Focus the composer',MOD+'I'],['Find in conversation',MOD+'F'],['Send / new line','Enter / ⇧Enter'],
+ ['Dictate',MOD+'⇧M'],['Toggle the room list',MOD+'B'],['Toggle room details',MOD+'⌥B'],
+ ['Go to room 1–9',MOD+'1 … '+MOD+'9'],['Previous / next room','⌥↑ / ⌥↓'],
+ ['Keyboard shortcuts',MOD+'/'],['Close anything open','Esc']
+];
+function openShortcuts(){
+ const host=$('#shortcut-list');host.replaceChildren();
+ for(const pair of SHORTCUTS){const row=el('div','shortcut-row');row.append(el('span','',pair[0]),el('kbd','',pair[1]));host.append(row);}
+ $('#shortcuts').showModal();
+}
+$('#close-shortcuts').onclick=()=>$('#shortcuts').close();
+function toggleRooms(){document.body.classList.toggle('hide-rooms');}
+async function resetRoom(){
+ if(!state?.messages.length)return toast('This room has no messages yet.');
+ if(!confirm(`Clear every message in "${state.title}"? Agents, skills, shared notes and pins stay as they are.`))return;
+ try{await api('rooms/reset',{id:state.id});toast('Conversation cleared. Agents start fresh sessions.');}catch(e){toast(e.message);}
+}
+// Room order for the numeric and arrow shortcuts matches what the sidebar shows.
+const activeRooms=()=>(state?.rooms||[]).filter(r=>!r.archived);
+function gotoRoom(index){const r=activeRooms()[index];if(r&&r.id!==state.id)api('rooms/select',{id:r.id}).catch(e=>toast(e.message));}
+function stepRoom(delta){const rooms=activeRooms(),i=rooms.findIndex(r=>r.id===state?.id);if(i<0||rooms.length<2)return;gotoRoom((i+delta+rooms.length)%rooms.length);}
+document.addEventListener('keydown',e=>{
+ const mod=e.metaKey||e.ctrlKey,typing=/^(INPUT|TEXTAREA)$/.test(e.target.tagName)||e.target.isContentEditable;
+ if(mod&&!e.shiftKey&&!e.altKey&&e.key.toLowerCase()==='k'){e.preventDefault();return openPalette();}
+ if($('#palette').open)return;
+ if(mod&&e.altKey&&e.key.toLowerCase()==='b'){e.preventDefault();return $('#context-btn').click();}
+ if(mod&&!e.altKey&&!e.shiftKey&&e.key.toLowerCase()==='b'){e.preventDefault();return toggleRooms();}
+ if(mod&&e.shiftKey&&e.key.toLowerCase()==='w'){e.preventDefault();return openSkills();}
+ if(mod&&!e.shiftKey&&e.key.toLowerCase()==='n'){e.preventDefault();return openSettings(undefined,true);}
+ if(mod&&e.key===','){e.preventDefault();return openSettings();}
+ if(mod&&e.key==='/'){e.preventDefault();return openShortcuts();}
+ if(mod&&!e.shiftKey&&e.key.toLowerCase()==='i'){e.preventDefault();$('#message').focus();return;}
+ if(mod&&!e.shiftKey&&e.key.toLowerCase()==='f'){e.preventDefault();return openFind();}
+ if(mod&&!e.shiftKey&&!e.altKey&&/^[1-9]$/.test(e.key)){e.preventDefault();return gotoRoom(Number(e.key)-1);}
+ if(e.altKey&&!mod&&(e.key==='ArrowUp'||e.key==='ArrowDown')&&!typing){e.preventDefault();return stepRoom(e.key==='ArrowDown'?1:-1);}
+ if(e.key==='Escape'&&find.open&&!document.querySelector('dialog[open]')){e.preventDefault();closeFind();}
+});
 function persistDraft(){if(!state)return;drafts.set(state.id,{text:$('#message').value,files:pendingFiles});try{localStorage.setItem('roundtable-drafts',JSON.stringify([...drafts]));}catch{}}
 $('#message').addEventListener('input',persistDraft);window.addEventListener('pagehide',persistDraft);
 function renderDelta(d){applyDelta(d,state,rendered,{write:safeText,status:text=>$('#live-status').textContent=text,selection:window.getSelection(),tasks:(v,m)=>{renderMessageTasks(v,m);renderWorking(state);}});}

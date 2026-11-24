@@ -82,6 +82,21 @@ test('real server with protocol fixtures: handoffs, one reply per user message, 
   assert.equal((await post('message',{roomId:second,text:'Shared file',target:'codex',attachments:[{id:shared.id,name:'pixel.png'}]})).status,200);await settle();
   const disk=async()=>JSON.parse(await fs.readFile(path.join(data,'rooms.json'),'utf8'));
   let saved=(await disk()).rooms.find(r=>r.id===original2);assert.ok(Object.keys(saved.sessions).length>0);const kept=saved.messages.length;
+  // Reset clears the conversation of the second room and the upload only it referenced, and leaves the room itself intact.
+  const beforeReset=(await disk()).rooms.find(r=>r.id===second);assert.ok(beforeReset.messages.length>0);
+  assert.equal((await post('rooms/reset',{id:second})).status,200);
+  const afterReset=(await disk()).rooms.find(r=>r.id===second);
+  assert.equal(afterReset.messages.length,0);assert.deepEqual(afterReset.sessions,{});assert.deepEqual(afterReset.pinnedMessageIds,[]);
+  assert.equal(afterReset.title,beforeReset.title);assert.deepEqual(afterReset.agents,beforeReset.agents);assert.equal(afterReset.notes,beforeReset.notes);
+  assert.equal((await post('rooms/reset',{id:second})).status,400);
+  // The other room still holds this upload, so reset must not have removed it.
+  assert.ok((await fs.readdir(path.join(data,'uploads'))).includes(shared.id+'.json'));
+  await post('rooms/select',{id:third});await post('message',{text:'@claude WAIT_FOR_STOP',target:'all'});await wait(100);
+  assert.equal((await post('rooms/reset',{id:third})).status,409);
+  await post('stop',{roomId:third});await settle();
+  // Put the shared attachment back in the second room, so the delete checks below still test sharing.
+  assert.equal((await post('message',{roomId:second,text:'Shared file again',target:'codex',attachments:[{id:shared.id,name:'pixel.png'}]})).status,200);await settle();
+  await post('rooms/select',{id:original2});
   assert.equal((await post('rooms/archive',{id:original2})).status,200);
   saved=(await disk()).rooms.find(r=>r.id===original2);assert.equal(saved.archived,true);assert.deepEqual(saved.sessions,{});assert.equal(saved.messages.length,kept);
   s=(await fetch(base+'/api/bootstrap',{headers}).then(r=>r.json())).state;assert.notEqual(s.id,original2);assert.equal(s.rooms.find(r=>r.id===original2).archived,true);

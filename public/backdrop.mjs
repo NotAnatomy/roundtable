@@ -14,7 +14,9 @@ void main(){
  col+=(hash(gl_FragCoord.xy+fract(u_t))-0.5)*0.014;
  gl_FragColor=vec4(col,1.);}`;
 export const PREFS_KEY='roundtable-prefs';
-export function loadPrefs(storage){try{const p=JSON.parse(storage?.getItem(PREFS_KEY)||'{}');return {backdrop:p.backdrop!==false};}catch{return {backdrop:true};}}
+export const DEFAULT_PREFS={backdrop:true,notify:false,motion:'system'};
+// Unknown or damaged stored values fall back to the defaults rather than stopping startup.
+export function loadPrefs(storage){try{const p=JSON.parse(storage?.getItem(PREFS_KEY)||'{}');return {backdrop:p.backdrop!==false,notify:p.notify===true,motion:['system','reduced'].includes(p.motion)?p.motion:'system'};}catch{return {...DEFAULT_PREFS};}}
 export function savePrefs(storage,prefs){try{storage?.setItem(PREFS_KEY,JSON.stringify(prefs));}catch{}}
 export function createBackdrop(doc=document){
  const canvas=doc.createElement('canvas');canvas.id='backdrop';canvas.setAttribute('aria-hidden','true');

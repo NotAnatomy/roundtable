@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.8.0
+
+### Added
+
+- Agent characters: a silhouette-and-eyes mascot per agent whose animation follows the real turn lifecycle (idle, thinking, working, streaming, done, failed, sleeping).
+- Command palette (⌘K) over rooms, skills and actions, with ranked matching.
+- Keyboard shortcuts for new room, settings, skills, composer focus, find, room list, details pane, room 1 to 9, previous/next room, and a shortcuts sheet on ⌘/.
+- Find in conversation (⌘F) with match position, next/previous and a flash on the message it reveals.
+- Unread counts on background rooms, and an opt-in desktop notification when one finishes a turn.
+- Reset a conversation: clears messages, pins and native sessions while keeping the room, its agents and its notes.
+
+### Changed
+
+- The stylesheet is built on a token system: one ink seed with alpha-derived text, icon, border and fill roles, plus 4px spacing, radius, control height, type, duration and easing scales. Depth comes from hairline borders rather than heavy shadows.
+- Preferences gained a Reduce motion switch that applies in Roundtable only, alongside the system setting.
+
 ## 0.7.0
 
 ### Added

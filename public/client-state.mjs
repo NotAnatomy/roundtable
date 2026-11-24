@@ -10,3 +10,19 @@ export function applyDelta(d,state,rendered,{write,status,selection,tasks}){
  if(selection&&!selection.isCollapsed&&v.text.contains(selection.anchorNode))v.deferred=d.text;else{write(v.text,d.text);delete v.deferred;}
  status((state.agents.find(a=>a.id===d.activeAgent)?.name||'Room')+' · '+(d.activity||'Replying'));return true;
 }
+// Per-room read markers, kept in this browser. A room is unread when it holds
+// more messages than were on screen the last time it was the open room.
+export class SeenStore extends Map {
+ constructor(storage,key='roundtable-seen'){super();this.storage=storage;this.key=key;
+  try{const values=JSON.parse(storage?.getItem(key)||'[]');if(Array.isArray(values))for(const [id,n]of values)if(typeof id==='string'&&Number.isInteger(n)&&n>=0)super.set(id,n);}catch{}}
+ set(id,count){super.set(id,count);try{this.storage?.setItem(this.key,JSON.stringify([...this]));}catch{}return this;}
+}
+export function unreadCount(room,seen){
+ if(!room||room.id===seen?.selectedId)return 0;
+ return Math.max(0,(room.count||0)-(seen?.get(room.id)??room.count??0));
+}
+// Rooms that just stopped replying while the user was looking at a different room.
+export function finishedElsewhere(before=[],after=[],selectedId){
+ const was=new Map(before.map(r=>[r.id,r.busy]));
+ return after.filter(r=>r.id!==selectedId&&was.get(r.id)===true&&r.busy===false);
+}
