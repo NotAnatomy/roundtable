@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.10.0
+
+### Added
+
+- Browser: a real Brave, Chrome or Edge window, launched in a profile of Roundtable's own, that Codex and Claude drive one step at a time through an `rtbrowse` command put on their path only while their own turn runs. Open, read, click, type, press, scroll, wait, back, forward, reload and screenshot. Every step answers with the page that resulted.
+- Saved sign-ins: a name, a site, a username and a password that Roundtable types into the page itself. The agent is told the name and the site, never either value, and both are removed from anything it reports. A sign-in is typed only when the page in front of the browser is that exact origin.
+- A Browser section in the room details panel with the live page, a screenshot of it and the steps taken, and the steps taken during a reply are kept with that reply.
+- Per-room Browser permission in Room settings, a Browser dialog to open, close and delete the window's browsing data, and a Browser entry in the command palette.
+
+### Changed
+
+- Static assets are served with `Cache-Control: no-store`, so an upgraded server is never paired with a cached `app.js`.
+- The README no longer says Roundtable has no browser. The vault's website logins, declined in 0.9.0 for exactly that reason, are now the saved sign-ins above. Card numbers are still deliberately absent.
+
+### Notes
+
+- Only `open` can start a window; every other step needs a page already in front of the browser. Only http and https, downloads blocked, Roundtable's own address refused, local and private addresses refused outside a Work room, forty steps per turn.
+- A page is untrusted text: each agent is told that instructions written on a page are never its instructions, and that nothing on the web is permission to buy, send, post or agree to anything.
+- API participants run no commands and Antigravity runs in its own sandbox, so neither can browse.
+
 ## 0.9.0
 
 ### Added

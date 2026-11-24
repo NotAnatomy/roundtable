@@ -1,6 +1,6 @@
-# Roundtable 0.9.0 verification
+# Roundtable 0.10.0 verification
 
-`npm test`: 60 passed, 0 failed. Tests make no paid model calls and no live GitHub calls.
+`npm test`: 66 passed, 0 failed. Tests make no paid model calls and no live GitHub calls.
 
 Coverage includes:
 
@@ -28,9 +28,17 @@ Coverage includes:
 - Voice with a mocked fetcher: dictation request shape and transcript extraction, key redaction, PCM to WAV framing, Markdown stripping for speech, the browser WAV encoder's header and sample scaling.
 - Skill import with a mocked fetcher: raw SKILL.md, repository listing without body fetches, folder scoping, depth and result caps, rejected hosts, credentials, redirects, oversized responses, rate limit responses, and the instructions-only limitation carried into the saved skill and the agent prompt.
 
+- Browser rules: scheme allowlist, Roundtable's own origin refused, local and private addresses refused outside a Work room, the action allowlist with every rejected shape, ref bounds, page-report trimming with its truncation note and ref cap, login validation, and origin matching that refuses a look-alike domain, plain http, a different subdomain and an opaque origin.
+- A real installed Chromium browser, driven headless: a page read with numbered elements, text typed through the real input pipeline and read back, a password typed by Roundtable that is absent from the page text and reported as `(filled)`, a submit that navigates and reports the page that arrived, history, a JPEG screenshot, and a stale ref from an earlier page refused rather than clicked. Skipped when no browser is installed, or with `ROUNDTABLE_TEST_BROWSER=0`.
+- The browser as an agent reaches it, on the real server: with browsing off the command is not on the agent's path and the prompt never mentions it; with browsing on the prompt carries the command list, the saved sign-in names and the untrusted-page rule but neither username nor password; the per-turn token is handed to the process, works during the turn and is refused after it; the window's own token is refused on that route; and the guards answer before a browser would be launched. Sign-in values are absent from the bootstrap state and the file holding them is mode 0600.
+
 Additional local check: PDF.js extracted known text and rasterized a real one-page PDF containing text and graphics. The check used the runtime's installed canvas library, not an application dependency. It caught missing modern-engine functionality; the bundled PDF.js legacy compatibility build resolved it.
 
 0.5.0 was also exercised in a local browser against a scratch data directory: the generated avatars rendered in the roster, Import from URL listed 20 skills from the public anthropics/skills repository in two GitHub API requests, the docx skill preview showed the scripts/ limitation with nine flagged lines and saved with that note, archive moved the room into the Archived section and created a replacement, the delete button stayed disabled until the exact title was typed, and delete closed both dialogs with no console errors at 1440px and 375px widths. Pressing Enter in the URL field was not exercised by the automation; the Fetch button was.
+
+0.10.0 end-to-end check with a real browser: a fixture agent in a Work room ran `rtbrowse open` against a local test page, `rtbrowse login`, `rtbrowse read` and `rtbrowse type --submit`. Brave opened, Roundtable typed the saved username and password into the form, the agent's reply contained neither value, and the test site's own echo of them, both in the page text and in the resulting URL, came back redacted. The screenshot reached the Roundtable window as a JPEG. One defect was found and fixed during this check: the page address, which a site can put a typed value into, was stored with the reply and shown in the window without redaction.
+
+0.10.0 browser check of the interface: the Browser dialog reported which browser would be used and that the window was closed, a sign-in saved through the form dropped the page path from the site and appeared as a card with neither value anywhere in the page, http was refused, turning on Browser in Room settings showed the Browser section in the room details panel and an "on" marker in the sidebar, Open the window launched Brave and the panel showed its live page title, address and screenshot, and Delete browsing data closed the window and removed the profile. One defect was found during this check: the server served `app.js` without cache headers, so an upgraded server was paired with the previous version's script; assets are now `no-store`.
 
 0.9.0 browser check: a routine was created through the form (schedule fields swapped correctly between daily, repeating and once), saved, listed with its next run, and its Test run put a message labelled with the routine into the transcript, after which each participant replied once and the room stopped. Upcoming appeared in the room details panel. A secret was saved through the dialog, appeared by name in the room assignment picker, and the bootstrap state fetched from the page did not contain its value. No console errors.
 

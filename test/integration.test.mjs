@@ -74,12 +74,12 @@ test('real server with protocol fixtures: handoffs, one reply per user message, 
   assert.deepEqual(await fs.readdir(path.join(data,'requests')),[interrupted+'.json']);
   const finalLogs=(await fs.readFile(path.join(dir,'prompts'),'utf8')).trim().split('\n').map(JSON.parse);assert.match(finalLogs.at(-1).prompt,/Claude builds on the shared notebook/);
   // Archive and delete. The selected room here is the original room, which still holds the interrupted reply's retry file.
-  const settle=async()=>{for(let i=0;i<100;i++){await wait(50);s=(await fetch(base+'/api/bootstrap',{headers}).then(r=>r.json())).state;if(!s.busy)break;}return s;};
+  const settle=async(roomId=null)=>{for(let i=0;i<100;i++){await wait(50);s=(await fetch(base+'/api/bootstrap',{headers}).then(r=>r.json())).state;const busy=roomId?s.rooms.find(r=>r.id===roomId)?.busy:s.busy;if(!busy)break;}return s;};
   const png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aJ1sAAAAASUVORK5CYII=',jpg=Buffer.from([255,216,255,224,0,16,74,70,73,70,0,1]).toString('base64');
   const shared=await post('uploads',{name:'pixel.png',mime:'image/png',data:png}).then(r=>r.json()),unique=await post('uploads',{name:'photo.jpg',mime:'image/jpeg',data:jpg}).then(r=>r.json());
   const original2=s.id,second=s.rooms.find(r=>r.title==='Second room').id,third=s.rooms.find(r=>r.title==='During generation').id;
   assert.equal((await post('message',{text:'Two files',target:'codex',attachments:[{id:shared.id,name:'pixel.png'},{id:unique.id,name:'photo.jpg'}]})).status,200);await settle();
-  assert.equal((await post('message',{roomId:second,text:'Shared file',target:'codex',attachments:[{id:shared.id,name:'pixel.png'}]})).status,200);await settle();
+  assert.equal((await post('message',{roomId:second,text:'Shared file',target:'codex',attachments:[{id:shared.id,name:'pixel.png'}]})).status,200);await settle(second);
   const disk=async()=>JSON.parse(await fs.readFile(path.join(data,'rooms.json'),'utf8'));
   let saved=(await disk()).rooms.find(r=>r.id===original2);assert.ok(Object.keys(saved.sessions).length>0);const kept=saved.messages.length;
   // Reset clears the conversation of the second room and the upload only it referenced, and leaves the room itself intact.
@@ -95,7 +95,7 @@ test('real server with protocol fixtures: handoffs, one reply per user message, 
   assert.equal((await post('rooms/reset',{id:third})).status,409);
   await post('stop',{roomId:third});await settle();
   // Put the shared attachment back in the second room, so the delete checks below still test sharing.
-  assert.equal((await post('message',{roomId:second,text:'Shared file again',target:'codex',attachments:[{id:shared.id,name:'pixel.png'}]})).status,200);await settle();
+  assert.equal((await post('message',{roomId:second,text:'Shared file again',target:'codex',attachments:[{id:shared.id,name:'pixel.png'}]})).status,200);await settle(second);
   await post('rooms/select',{id:original2});
   assert.equal((await post('rooms/archive',{id:original2})).status,200);
   saved=(await disk()).rooms.find(r=>r.id===original2);assert.equal(saved.archived,true);assert.deepEqual(saved.sessions,{});assert.equal(saved.messages.length,kept);

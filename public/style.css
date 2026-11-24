@@ -124,3 +124,16 @@ body.hide-rooms .sidebar{overflow:hidden;min-width:0;padding-left:0;padding-righ
 #routine-list .skill-card p,#secret-list .skill-card p{margin-top:4px}
 #secret-form input[name=name]{text-transform:uppercase}
 #room-secrets:empty+#room-secrets-note{display:none}
+
+/* Browser: the steps a reply took, and the window as the user sees it. */
+.browser-steps{margin:0 0 var(--sp-2);padding:var(--sp-1-5) var(--sp-2);border:1px solid var(--rt-border-3);border-radius:var(--r-base);background:var(--rt-elevated);display:flex;flex-direction:column;gap:2px}
+.browser-steps>b{font-size:var(--t-xxs);color:var(--rt-text-3);font-weight:500;letter-spacing:.02em;margin-bottom:2px}
+.browser-step{display:flex;align-items:baseline;justify-content:space-between;gap:var(--sp-2);font-size:var(--t-xs);color:var(--rt-text-2)}
+.browser-step small{font-size:var(--t-xxs);color:var(--rt-text-4);flex-shrink:0;font-variant-numeric:tabular-nums}
+.browser-log{display:flex;flex-direction:column;gap:2px;margin-top:var(--sp-1)}
+.browser-log .browser-step{padding:2px 0;border-bottom:1px solid var(--rt-border-4)}
+.browser-shot{display:block;width:100%;padding:0;margin:var(--sp-1) 0 var(--sp-1-5);border:1px solid var(--rt-border-3);border-radius:var(--r-base);overflow:hidden;background:var(--rt-elevated);cursor:pointer;transition:border-color var(--d-fast) var(--ease-sharp)}
+.browser-shot:hover{border-color:var(--rt-border)}
+.browser-shot img{display:block;width:100%;height:auto;opacity:.92}
+#browser-dot{font-size:var(--t-xxs);color:var(--rt-accent)}
+#browser-where{word-break:break-word}

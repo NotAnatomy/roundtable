@@ -24,6 +24,8 @@ import {fetchSkillSource} from './skill-fetch.mjs';
 import {createTaskTracker} from './tasks.mjs';
 import {validateSecret,secretEnv,redactSecrets,describeSecrets} from './secrets.mjs';
 import {validateRoutine,nextRun,dueRoutines,blockedReason,advance,describeSchedule} from './routines.mjs';
+import {validateAction,describeAction,checkUrl,pageReport,formatReport,validateLogin,matchLogin,describeLogins,BROWSER_LIMITS} from './browser.mjs';
+import {openBrowser,findBrowser} from './cdp.mjs';
 
 const root=path.dirname(fileURLToPath(import.meta.url));
 const {version}=JSON.parse(await fs.readFile(path.join(root,'package.json'),'utf8'));
@@ -40,13 +42,20 @@ const saveSecrets=async()=>{await fs.writeFile(secretFile+'.tmp',JSON.stringify(
 // A room reaches only the secrets it was given, and only a native CLI is given an environment at all.
 const roomSecrets=target=>(target.secretIds||[]).map(id=>db.secrets.find(s=>s.id===id)).filter(Boolean).map(s=>({...s,value:secretValues[s.id]})).filter(s=>typeof s.value==='string');
 const allSecretValues=()=>Object.values(secretValues).map(value=>({value}));
+const loginFile=path.join(data,'logins.json');let loginValues={};
+try{loginValues=JSON.parse(await fs.readFile(loginFile,'utf8'));}catch(e){if(e.code!=='ENOENT')throw e;}
+const saveLogins=async()=>{await fs.writeFile(loginFile+'.tmp',JSON.stringify(loginValues),{mode:0o600});await fs.rename(loginFile+'.tmp',loginFile);};
+// A saved username comes back out of any page it was typed into, so it is removed from agent-visible
+// text like a password is. Four characters is the floor here, because a username can be short.
+const allLoginValues=()=>Object.values(loginValues).flatMap(v=>[{value:v?.username},{value:v?.password}]);
+const redactAll=text=>redactSecrets(redactSecrets(text,allSecretValues()),allLoginValues(),4);
 const token=randomBytes(32).toString('hex'),launchSecret=randomBytes(32).toString('hex');
 const clients=new Set(),jobs=new Map();let mutating=false;
 const equal=(a,b)=>typeof a==='string'&&Buffer.byteLength(a)===Buffer.byteLength(b)&&timingSafeEqual(Buffer.from(a),Buffer.from(b));
-const snapshot=()=>{const {sessions,...publicRoom}=room,active=jobs.get(room.id);return {...publicRoom,busy:!!active,activeAgent:active?.agent||null,activity:active?.activity||'',capacity:budget(room),usage:totalUsage(room.messages),rooms:db.rooms.map(r=>({id:r.id,title:r.title,agents:r.agents.length,count:r.messages.length,busy:jobs.has(r.id),archived:!!r.archived})),skills:db.skills,voice:voiceInfo(),secrets:db.secrets.map(({id,name,description})=>({id,name,description})),routines:db.routines.map(r=>({...r,scheduleText:describeSchedule(r.schedule)})),version};};
+const snapshot=()=>{const {sessions,...publicRoom}=room,active=jobs.get(room.id);return {...publicRoom,busy:!!active,activeAgent:active?.agent||null,activity:active?.activity||'',capacity:budget(room),usage:totalUsage(room.messages),rooms:db.rooms.map(r=>({id:r.id,title:r.title,agents:r.agents.length,count:r.messages.length,busy:jobs.has(r.id),archived:!!r.archived})),skills:db.skills,voice:voiceInfo(),secrets:db.secrets.map(({id,name,description})=>({id,name,description})),routines:db.routines.map(r=>({...r,scheduleText:describeSchedule(r.schedule)})),browser:browserInfo(),version};};
 function emit(event,data){const content=frame(event,data);for(const res of clients){if(res.writableLength>1024*1024){res.end();clients.delete(res);}else res.write(content);}}
 function broadcast(){emit('state',snapshot());}
-const safeError=e=>redactSecrets(Object.values(connections).reduce((t,c)=>c.key?t.split(c.key).join('[redacted]'):t,String(e?.message||e)),allSecretValues());
+const safeError=e=>redactAll(Object.values(connections).reduce((t,c)=>c.key?t.split(c.key).join('[redacted]'):t,String(e?.message||e)));
 const connectionInfo=()=>Object.fromEntries(['google','agentrouter'].map(p=>[p,{configured:!!connections[p]?.key,baseURL:connections[p]?.baseURL||'',protocol:connections[p]?.protocol||'openai',...(p==='google'?{dictationModel:connections.google?.dictationModel||VOICE_DEFAULTS.dictationModel,voiceModel:connections.google?.voiceModel||VOICE_DEFAULTS.voiceModel,voiceName:connections.google?.voiceName||VOICE_DEFAULTS.voiceName,voices:VOICE_NAMES}:{})}]));
 const voiceInfo=()=>({ready:!!connections.google?.key});
 async function validateSettings(input){
@@ -71,7 +80,7 @@ async function validateSettings(input){
  let workspace=typeof input.workspace==='string'?input.workspace.trim():'';
  if(workspace){if(!path.isAbsolute(workspace))throw new Error('Use an absolute project folder path.');workspace=await resolveWorkspace(workspace);}
  if(input.mode==='work'&&!workspace)throw new Error('Choose an existing project folder for Work mode.');
- return {title:input.title.trim(),mode:input.mode,notes:input.notes,workspace,allowEdits:!!input.allowEdits,agents};
+ return {title:input.title.trim(),mode:input.mode,notes:input.notes,workspace,allowEdits:!!input.allowEdits,allowBrowser:!!input.allowBrowser,agents};
 }
 function message(target,agent,text='',status='complete',kind='message'){const m={id:randomUUID(),agentId:agent?.id||null,speaker:agent?.name||'Anatomy',...(agent?.provider?{provider:agent.provider,model:agent.model||'provider default'}:{}),text,status,kind,time:new Date().toISOString()};target.messages.push(m);return m;}
 const mediaFiles=await mediaStore(path.join(data,'uploads'));
@@ -79,6 +88,96 @@ const requestDir=path.join(data,'requests');await fs.mkdir(requestDir,{recursive
 const uploadDir=path.join(data,'uploads');
 async function cleanup(){try{const removed=await collectGarbage({rooms:db.rooms,requestDir,uploadDir});if(removed.requests||removed.uploads)console.log(`Removed ${removed.requests} finished retry files and ${removed.uploads} unreferenced uploads.`);}catch(e){console.error('Cleanup skipped: '+safeError(e));}}
 await cleanup();setInterval(cleanup,24*60*60*1000).unref();
+// ---- Browser --------------------------------------------------------------
+// One window, in a profile of Roundtable's own, so it never reads or changes the user's everyday
+// browser. It is deliberately visible: watching it is the review step an unattended click cannot have.
+const browserDir=path.join(data,'browser'),profileDir=path.join(browserDir,'profile'),shotFile=path.join(browserDir,'page.jpg');
+const toolDir=path.join(root,'bin');
+let browserApp=await findBrowser(),browser=null,opening=null,holder=null;
+const browserView={url:'',title:'',shot:0,actions:[],note:''};
+async function ensureBrowser(){
+ if(browser?.alive)return browser;
+ browser=null;
+ if(!opening){
+  await fs.mkdir(browserDir,{recursive:true,mode:0o700});
+  opening=openBrowser({profileDir,onEnd:reason=>{browser=null;Object.assign(browserView,{url:'',title:'',note:reason});broadcast();}})
+   .then(session=>{browser=session;opening=null;browserApp={name:session.name,bin:session.binary};browserView.note=`${session.name} is open in Roundtable's own profile.`;broadcast();return session;},
+         e=>{opening=null;throw e;});
+ }
+ return opening;
+}
+async function captureBrowserView(){
+ if(!browser?.alive)return;
+ // A site can put a value Roundtable typed straight back into its own URL, and this address is shown
+ // in the window and stored with the reply, so it is cleaned like anything else an agent could echo.
+ try{const where=await browser.where();browserView.url=redactAll(where.url||'');browserView.title=redactAll(where.title||'');}catch{}
+ try{await fs.writeFile(shotFile,Buffer.from(await browser.shot(),'base64'),{mode:0o600});browserView.shot++;}catch{}
+}
+const browserInfo=()=>({available:!!browserApp,name:browserApp?.name||'',open:!!browser?.alive,allowed:!!room.allowBrowser,
+ url:browserView.url,title:browserView.title,shot:browserView.shot,note:browserView.note,actions:browserView.actions.slice(-14),
+ logins:db.logins.map(({id,label,origin})=>({id,label,origin}))});
+// Every browser step an agent takes arrives here. Page-changing actions answer with the new page, so
+// one step is one request and the agent is never acting on a page it has not been shown.
+async function browserAct(job,input){
+ const target=job.room;
+ if(!target.allowBrowser)throw new Error('Browsing is turned off for this room.');
+ // There is one window. Two rooms clicking in it at the same time would each act on the other's page.
+ if(holder&&holder!==job&&jobs.has(holder.room.id))throw new Error(`${holder.room.title} is using the browser right now. Say so and let the user decide what should wait.`);
+ holder=job;
+ const action=validateAction(input,{selfOrigin:`http://127.0.0.1:${port}`,allowLocal:target.mode==='work'});
+ if(action.action!=='logins'){
+  if(job.browserActions>=BROWSER_LIMITS.actions)throw new Error(`This turn has used all ${BROWSER_LIMITS.actions} of its browser steps. Report what you found and let the user ask for more.`);
+  job.browserActions++;
+ }
+ // Only "open" may start a window. Every other step acts on a page, so without one it is refused
+ // rather than launching a browser the user did not ask for.
+ if(!['logins','open'].includes(action.action)&&!browser?.alive)throw new Error('The browser window is not open. Run rtbrowse open <url> first.');
+ const session=action.action==='logins'?null:await ensureBrowser();
+ const report=async()=>formatReport(pageReport(await session.read(BROWSER_LIMITS.snapshot,BROWSER_LIMITS.refs),BROWSER_LIMITS.snapshot));
+ const pause=ms=>new Promise(r=>setTimeout(r,ms));
+ let text='';
+ switch(action.action){
+  case 'logins':{const list=describeLogins(db.logins);
+   text=list.length?'Saved sign-ins:\n'+list.map(l=>`  ${l.label} - ${l.origin}`).join('\n')+'\nOpen that site\'s own sign-in page, then run rtbrowse login with the name.':'The user has saved no sign-ins, so you cannot sign in to anything.';break;}
+  case 'open':await session.goto(action.url);text=await report();break;
+  case 'read':text=await report();break;
+  case 'click':action.name=await session.click(action.ref);text=`Clicked ${action.name?JSON.stringify(action.name):'ref '+action.ref}.\n\n`+await report();break;
+  case 'type':{
+   action.name=await session.focus(action.ref);
+   if(action.replace)await session.clearField();
+   await session.insert(action.text);
+   if(action.submit){await session.key('Enter');await pause(1500);}
+   text=`Typed into ${action.name?JSON.stringify(action.name):'ref '+action.ref}${action.submit?' and pressed Enter':''}.\n\n`+await report();break;}
+  case 'press':await session.key(action.key);await pause(700);text=`Pressed ${action.key}.\n\n`+await report();break;
+  case 'scroll':await session.scroll(action.direction);text=await report();break;
+  case 'wait':await pause(action.seconds*1000);text=await report();break;
+  case 'back':await session.history(-1);text=await report();break;
+  case 'forward':await session.history(1);text=await report();break;
+  case 'reload':await session.reload();text=await report();break;
+  case 'shot':text='A fresh screenshot is now in the user\'s Roundtable window.';break;
+  case 'login':{
+   const login=db.logins.find(l=>l.label.toLowerCase()===action.label.toLowerCase());
+   // The guard that makes a saved password safer here than in a prompt: the page has to be the one it belongs to.
+   const problem=matchLogin(login,(await session.where()).url);
+   if(problem)throw new Error(problem);
+   const fields=await session.loginFields();
+   if(!fields.username&&!fields.password)throw new Error('No sign-in fields are visible on this page. Open the site\'s sign-in page, or click its sign-in button, then try again.');
+   const stored=loginValues[login.id]||{},filled=[];
+   if(fields.username&&stored.username&&await session.fillField('user',stored.username))filled.push('username');
+   if(fields.password&&stored.password&&await session.fillField('pass',stored.password))filled.push('password');
+   await session.clearFieldMarks();
+   if(!filled.length)throw new Error('Roundtable could not reach the sign-in fields on this page.');
+   action.label=login.label;
+   text=`Roundtable typed the saved ${filled.join(' and ')} for ${login.label} into ${login.origin}. ${fields.password?'':'This page asks for the username first, so run the same command again on the password step. '}Neither value was shown to you and you cannot read them back. Submit the form to continue. If the site asks for a code or a device confirmation, say so in chat: only the user can finish that, in the browser window.`;
+   break;}
+ }
+ await captureBrowserView();
+ const entry={text:describeAction(action),url:browserView.url,time:new Date().toISOString(),agent:job.agent||''};
+ browserView.actions.push(entry);if(browserView.actions.length>40)browserView.actions.shift();
+ if(job.message)job.message.browser=[...(job.message.browser||[]),entry].slice(-BROWSER_LIMITS.actions);
+ broadcast();
+ return redactAll(text);
+}
 const TURN_LIMIT=10*60*1000,ROOM_CAP=50,activeRooms=()=>db.rooms.filter(r=>!r.archived).length;
 function startJob(target){if(jobs.has(target.id))throw new Error('This room is already replying.');
  for(const job of jobs.values())if(target.mode==='work'&&job.room.mode==='work'&&(target.allowEdits||job.room.allowEdits)&&overlap(target.workspace,job.room.workspace))throw new Error('Another room is using this project. Wait before starting overlapping project work.');
@@ -96,21 +195,27 @@ async function runGroup(target,speakers,job,retry=null){
   const session=retry?undefined:typeof stored==='string'?stored:stored?.id,after=retry?null:stored?.through;
   let prompt,fullPrompt,m=retry?.message;
   const secrets=native?roomSecrets(target):[],described=describeSecrets(secrets);
-  try{fullPrompt=retry?.request.prompt||makePrompt(target,agent,db.skills,{},described);prompt=retry?fullPrompt:makePrompt(target,agent,db.skills,native&&session&&after?{after}:{},described);}catch(e){message(target,{id:'system',name:'Room'},safeError(e),'error','error');break;}
-  if(!m)m=message(target,agent,'','streaming');else{m.attempts||=[];m.attempts.push({text:m.text,status:m.status,usage:m.usage,time:m.time});m.text='';m.status='streaming';m.kind='message';delete m.usage;delete m.tasks;}
+  // Only a native CLI can run the browser command, because only a native CLI has a shell to run it in.
+  const browsing=['codex','claude'].includes(agent.provider)&&!!target.allowBrowser,browserPrompt=browsing?{logins:describeLogins(db.logins),local:target.mode==='work'}:null;
+  try{fullPrompt=retry?.request.prompt||makePrompt(target,agent,db.skills,{},described,browserPrompt);prompt=retry?fullPrompt:makePrompt(target,agent,db.skills,native&&session&&after?{after}:{},described,browserPrompt);}catch(e){message(target,{id:'system',name:'Room'},safeError(e),'error','error');break;}
+  if(!m)m=message(target,agent,'','streaming');else{m.attempts||=[];m.attempts.push({text:m.text,status:m.status,usage:m.usage,time:m.time});m.text='';m.status='streaming';m.kind='message';delete m.usage;delete m.tasks;delete m.browser;}
   const tracker=createTaskTracker();
   const request=retry?.request||{prompt:fullPrompt,agent:structuredClone(agent),mode:target.mode,allowEdits:target.allowEdits,cwd,media:mediaRefs(target)};
   await fs.writeFile(path.join(requestDir,m.id+'.json'),JSON.stringify(request),{mode:0o600});
   const updates=deltaSender(emit);const update=()=>updates.push({roomId:target.id,id:m.id,text:m.text,activity:job.activity,activeAgent:agent.id,tasks:m.tasks||null});broadcast();
   // A tool label is built from the command the agent ran, so it can carry a value too.
   const onEvent=event=>{tracker.apply(event&&event.label?{...event,label:redactSecrets(event.label,secrets)}:event);const snap=tracker.snapshot();if(snap)m.tasks=snap;update();};
+  // The browser token lives exactly as long as this one agent's turn.
+  if(browsing){job.browserToken=randomBytes(24).toString('hex');job.browserActions=0;job.message=m;}
+  const env=browsing?{...secretEnv(secrets),ROUNDTABLE_BROWSER_URL:`http://127.0.0.1:${port}`,ROUNDTABLE_BROWSER_TOKEN:job.browserToken}:secretEnv(secrets);
   try{const runner=agent.provider==='codex'?runCodex:agent.provider==='claude'?runClaude:agent.provider==='antigravity'?runAntigravity:runApi;
-   const result=await runner({provider:agent.provider,model:agent.model,effort:agent.effort,config:connections[agent.provider],prompt,session,cwd:request.cwd,signal:controller.signal,mode:request.mode,allowEdits:request.allowEdits,secrets:secretEnv(secrets),media:await mediaFiles.images(retry?request.media:mediaRefs(target,native&&session?after:null)),
+   const result=await runner({provider:agent.provider,model:agent.model,effort:agent.effort,config:connections[agent.provider],prompt,session,cwd:request.cwd,signal:controller.signal,mode:request.mode,allowEdits:request.allowEdits,secrets:env,toolDir:browsing?toolDir:'',media:await mediaFiles.images(retry?request.media:mediaRefs(target,native&&session?after:null)),
     onText:text=>{m.text=redactSecrets(text,secrets);update();},onActivity:text=>{job.activity=redactSecrets(text,secrets);update();},onEvent});
    onEvent({type:'finish',ok:true});m.text=redactSecrets(result.text,secrets);m.status='complete';m.usage=result.usage;updates.flush();await fs.rm(path.join(requestDir,m.id+'.json'),{force:true});
    // Retry uses a fresh native session and cannot advance a later room checkpoint.
    if(result.session&&!retry)target.sessions[key]={id:result.session,through:m.id};await save();broadcast();
   }catch(e){onEvent({type:'finish',ok:false});updates.flush();m.status=controller.signal.aborted?'interrupted':'error';m.kind='error';if(e.usage)m.usage=e.usage;m.text=(m.text?m.text+'\n\n':'')+(controller.signal.aborted?'This reply was interrupted.':safeError(e));delete target.sessions[key];await save();broadcast();if(controller.signal.aborted)break;}
+  finally{job.browserToken='';job.message=null;if(holder===job)holder=null;}
  }}catch(e){message(target,{id:'system',name:'Room'},safeError(e),'error','error');}
  finally{clearTimeout(deadline);jobs.delete(target.id);await save();broadcast();}
 }
@@ -172,7 +277,20 @@ const server=http.createServer(async(req,res)=>{
       res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-cache','Connection':'keep-alive'});clients.add(res);res.write(frame('state',snapshot()));
       const t=setInterval(()=>res.write(': heartbeat\n\n'),20000);req.on('close',()=>{clients.delete(res);clearInterval(t);});return;
     }
+    // The browser command carries a turn token, not the window's token. It is the only route an agent
+    // can call, it works only while that agent's own turn is running, and it reaches nothing else here.
+    if(req.method==='POST'&&url.pathname==='/api/browser/act'){
+      const job=[...jobs.values()].find(j=>j.browserToken&&equal(req.headers['x-roundtable-browser'],j.browserToken));
+      if(!job)return json(res,403,{error:'The browser is not available in this turn. Ask the user to turn on Browser in Room settings.'});
+      try{return json(res,200,{ok:true,text:await browserAct(job,await body(req,20000))});}
+      catch(e){return json(res,400,{error:safeError(e)});}
+    }
     if(url.pathname.startsWith('/api/')&&!authorized(req))return json(res,403,{error:'Reload the page to reconnect securely.'});
+    if(req.method==='GET'&&url.pathname==='/api/browser/shot'){
+      try{const image=await fs.readFile(shotFile);res.writeHead(200,{'Content-Type':'image/jpeg','Cache-Control':'no-store'});res.end(image);}
+      catch{json(res,404,{error:'No screenshot yet.'});}
+      return;
+    }
     if(req.method==='GET'&&url.pathname.startsWith('/api/files/')){const saved=await mediaFiles.load(url.pathname.slice('/api/files/'.length));res.writeHead(200,{'Content-Type':saved.mime,'Cache-Control':'no-store','Content-Disposition':'attachment'});res.end(Buffer.from(saved.data,'base64'));return;}
     if(req.method==='GET'&&url.pathname==='/api/status'){const [codex,claude,antigravity]=await Promise.all([resolveCommand('codex'),resolveCommand('claude'),resolveCommand('agy')]);return json(res,200,{codex:codex.ok,claude:claude.ok,antigravity:antigravity.ok,ignoredEnvironment:strippedNames(),details:{codex,claude,antigravity},connections:connectionInfo()});}
     if(req.method==='GET'&&url.pathname==='/api/connections')return json(res,200,connectionInfo());
@@ -203,6 +321,22 @@ const server=http.createServer(async(req,res)=>{
       }
       if(url.pathname==='/api/skills/fetch'){if(typeof input.url!=='string'||input.url.length>2000)throw new Error('Paste a GitHub link.');return json(res,200,await fetchSkillSource(input.url));}
       if(url.pathname==='/api/connections/test'){if(!['google','agentrouter'].includes(input.provider)||typeof input.model!=='string'||!input.model.trim())throw new Error('Choose a model to test.');const result=await runApi({provider:input.provider,config:connections[input.provider],model:input.model.trim(),effort:'auto',prompt:'Reply with OK.',signal:AbortSignal.timeout(30000),onText:()=>{},maxOutputTokens:16});return json(res,200,{ok:true,message:'The provider returned text for this model.',sample:result.text.slice(0,200)});}
+      if(url.pathname==='/api/browser/open'){
+        const session=await ensureBrowser();
+        if(input.url)await session.goto(checkUrl(input.url,{selfOrigin:`http://127.0.0.1:${port}`,allowLocal:true}));
+        await session.activate();await captureBrowserView();broadcast();return json(res,200,{ok:true});
+      }
+      if(url.pathname==='/api/browser/close'){
+        await browser?.close();browser=null;Object.assign(browserView,{url:'',title:'',note:'The browser is closed.'});
+        broadcast();return json(res,200,{ok:true});
+      }
+      if(url.pathname==='/api/browser/clear'){
+        if([...jobs.values()].some(j=>j.browserToken))return json(res,409,{error:'An agent is using the browser. Stop that turn first.'});
+        await browser?.close();browser=null;
+        await fs.rm(profileDir,{recursive:true,force:true});await fs.rm(shotFile,{force:true});
+        Object.assign(browserView,{url:'',title:'',actions:[],shot:browserView.shot+1,note:'History, cookies and every signed-in session in Roundtable\'s browser were deleted.'});
+        broadcast();return json(res,200,{ok:true});
+      }
       if(mutating)return json(res,409,{error:'Another change is being saved. Try again.'});
       mutating=true;ownsMutation=true;
       if(jobs.has(target.id)&&['/api/message','/api/settings','/api/retry','/api/new'].includes(url.pathname))return json(res,409,{error:'This room is replying. Stop it before changing its agents or sending another message.'});
@@ -239,6 +373,23 @@ const server=http.createServer(async(req,res)=>{
         // A fresh native session is needed so a resumed agent cannot keep using an environment it no longer has.
         target.secretIds=[...new Set(input.secretIds)];target.sessions={};
         await save();broadcast();return json(res,200,{ok:true});
+      }
+      if(url.pathname==='/api/logins/save'){
+        const fields=validateLogin(input,db.logins),existing=db.logins.find(l=>l.id===input.id);
+        if(existing){
+          Object.assign(existing,{label:fields.label,origin:fields.origin});
+          const stored=loginValues[existing.id]||{};
+          loginValues[existing.id]={username:fields.username??stored.username,password:fields.password??stored.password};
+        }else{
+          const id=randomUUID();db.logins.push({id,label:fields.label,origin:fields.origin});
+          loginValues[id]={username:fields.username,password:fields.password};
+        }
+        await saveLogins();await save();broadcast();return json(res,200,{ok:true});
+      }
+      if(url.pathname==='/api/logins/delete'){
+        if(!db.logins.some(l=>l.id===input.id))throw new Error('Login not found.');
+        db.logins=db.logins.filter(l=>l.id!==input.id);delete loginValues[input.id];
+        await saveLogins();await save();broadcast();return json(res,200,{ok:true});
       }
       if(url.pathname==='/api/routines/save'){
         const fields=validateRoutine(input,db.routines,db.rooms),existing=db.routines.find(r=>r.id===input.id);
@@ -345,10 +496,12 @@ const server=http.createServer(async(req,res)=>{
     }
     if(req.method==='GET'&&pdfAssets.has(url.pathname)){res.setHeader('Content-Type',url.pathname.endsWith('.wasm')?'application/wasm':url.pathname.endsWith('.js')?'text/javascript':'application/octet-stream');res.end(await fs.readFile(pdfAssets.get(url.pathname)));return;}
     const assets={'/':'index.html','/app.js':'app.js','/client-state.mjs':'client-state.mjs','/avatar.mjs':'avatar.mjs','/palette.mjs':'palette.mjs','/dictation.mjs':'dictation.mjs','/backdrop.mjs':'backdrop.mjs','/tasklist.mjs':'tasklist.mjs','/attachments.mjs':'attachments.mjs','/vendor/pdf.min.mjs':'vendor/pdf.min.mjs','/vendor/pdf.worker.min.mjs':'vendor/pdf.worker.min.mjs','/style.css':'style.css','/markdown.mjs':'markdown.mjs','/vendor/marked.mjs':'vendor/marked.mjs'};const file=assets[url.pathname];
-    if(req.method==='GET'&&file){res.setHeader('Content-Type',/\.m?js$/.test(file)?'text/javascript':file.endsWith('.css')?'text/css':'text/html');res.end(await fs.readFile(path.join(root,'public',file)));return;}
+    // A local app changes under the user's feet on every upgrade, and a cached app.js against a newer
+    // server is a broken window with no obvious cause.
+    if(req.method==='GET'&&file){res.setHeader('Content-Type',/\.m?js$/.test(file)?'text/javascript':file.endsWith('.css')?'text/css':'text/html');res.setHeader('Cache-Control','no-store');res.end(await fs.readFile(path.join(root,'public',file)));return;}
     json(res,404,{error:'Not found'});
   }catch(e){json(res,400,{error:safeError(e),...(e.details?{details:e.details}:{})});}finally{if(ownsMutation)mutating=false;}
 });
 const launchURL=`http://127.0.0.1:${port}/?k=${launchSecret}`;
 server.listen(port,'127.0.0.1',async()=>{await fs.writeFile(path.join(data,'launch-url.txt'),launchURL+'\n',{mode:0o600});await fs.chmod(path.join(data,'launch-url.txt'),0o600);console.log(`Roundtable is ready: ${launchURL}\nPress Control+C to stop. Conversations are saved in ${data}.`);if(process.platform==='darwin'&&process.env.ROUNDTABLE_OPEN==='1')spawn('open',[launchURL],{stdio:'ignore'}).on('error',()=>{});});
-for(const sig of ['SIGINT','SIGTERM'])process.on(sig,()=>{for(const job of jobs.values())job.controller.abort();for(const c of clients)c.end();server.close();setTimeout(()=>process.exit(0),3000).unref();});
+for(const sig of ['SIGINT','SIGTERM'])process.on(sig,()=>{for(const job of jobs.values())job.controller.abort();void browser?.close();for(const c of clients)c.end();server.close();setTimeout(()=>process.exit(0),3000).unref();});

@@ -1,0 +1,47 @@
+#!/usr/bin/env node
+// The browser, as a command an agent can run.
+// Roundtable puts this on the PATH of a native agent only while its turn is live, and only in a room
+// where the user turned browsing on. The token is per turn: once the turn ends, this command stops working.
+const url=process.env.ROUNDTABLE_BROWSER_URL,token=process.env.ROUNDTABLE_BROWSER_TOKEN;
+const USAGE=`rtbrowse drives the Roundtable browser window. The user can see every step.
+
+  rtbrowse open <url>              Open a page and report what is on it
+  rtbrowse read                    Report the current page again, with fresh refs
+  rtbrowse click <ref>             Click the element with that ref number
+  rtbrowse type <ref> <text...>    Type into a field. --submit presses Enter, --append keeps what is there
+  rtbrowse press <key>             Enter, Tab, Escape, Backspace, an arrow, PageUp, PageDown, Home, End
+  rtbrowse scroll [up|down]        Scroll the page
+  rtbrowse wait [seconds]          Wait for the page to catch up
+  rtbrowse shot                    Put a fresh screenshot in the user's Roundtable window
+  rtbrowse back | forward | reload
+  rtbrowse logins                  List the logins the user saved, by name and site
+  rtbrowse login <name>            Roundtable types that saved login into the page. You never see it
+
+Refs come from the last open or read. Read the page again after it changes.`;
+
+const argv=process.argv.slice(2);
+const flags=new Set(argv.filter(a=>a.startsWith('--')));
+const words=argv.filter(a=>!a.startsWith('--'));
+const [command,...rest]=words;
+function fail(message,code=1){process.stderr.write(message.replace(/\s*$/,'')+'\n');process.exit(code);}
+if(!command||['help','-h','--help'].includes(command))fail(USAGE,command?0:1);
+if(!url||!token)fail('The browser is not available in this turn. Ask the user to turn on Browser in Room settings.');
+
+let request;
+switch(command){
+ case 'open':request={action:'open',url:rest.join(' ')};break;
+ case 'read':case 'shot':case 'back':case 'forward':case 'reload':case 'logins':request={action:command};break;
+ case 'click':request={action:'click',ref:rest[0]};break;
+ case 'type':request={action:'type',ref:rest[0],text:rest.slice(1).join(' '),submit:flags.has('--submit'),replace:!flags.has('--append')};break;
+ case 'press':request={action:'press',key:rest[0]};break;
+ case 'scroll':request={action:'scroll',direction:rest[0]||'down'};break;
+ case 'wait':request={action:'wait',seconds:Number(rest[0]||2)};break;
+ case 'login':request={action:'login',label:rest.join(' ')};break;
+ default:fail(`${command} is not an rtbrowse command.\n\n${USAGE}`);
+}
+try{
+ const res=await fetch(new URL('/api/browser/act',url),{method:'POST',headers:{'Content-Type':'application/json','x-roundtable-browser':token},body:JSON.stringify(request)});
+ const data=await res.json().catch(()=>({}));
+ if(!res.ok)fail(data.error||`The browser step failed (${res.status}).`);
+ process.stdout.write(String(data.text||'').replace(/\s*$/,'')+'\n');
+}catch(e){fail(`Roundtable could not be reached: ${e.message}`);}

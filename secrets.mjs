@@ -5,7 +5,7 @@ export const SECRET_LIMITS={name:128,value:4096,description:500,count:40,minValu
 // Reserved names. The stripped list is reserved so a secret cannot put back the provider and gateway
 // variables Roundtable removes to keep each CLI on its own login; the rest control how a process loads code.
 export const RESERVED=new Set([...STRIPPED_ENV,'PATH','HOME','SHELL','USER','LOGNAME','PWD','TMPDIR',
- 'NODE_OPTIONS','LD_PRELOAD','LD_LIBRARY_PATH','DYLD_INSERT_LIBRARIES','DYLD_LIBRARY_PATH','PYTHONPATH','PYTHONSTARTUP','GIT_SSH_COMMAND']);
+ 'ROUNDTABLE_BROWSER_TOKEN','ROUNDTABLE_BROWSER_URL','NODE_OPTIONS','LD_PRELOAD','LD_LIBRARY_PATH','DYLD_INSERT_LIBRARIES','DYLD_LIBRARY_PATH','PYTHONPATH','PYTHONSTARTUP','GIT_SSH_COMMAND']);
 export function validateSecret(input,existing=[]){
  const name=String(input?.name||'').trim().toUpperCase();
  if(!/^[A-Z][A-Z0-9_]*$/.test(name)||name.length>SECRET_LIMITS.name)throw new Error('Use an environment variable name: a letter first, then letters, numbers or underscores.');
@@ -24,9 +24,11 @@ export function validateSecret(input,existing=[]){
 export const secretEnv=(secrets=[])=>Object.fromEntries(secrets.filter(s=>s?.name&&typeof s.value==='string').map(s=>[s.name,s.value]));
 // Agent output is echoed into the transcript and sent on to every other participant, so a value that
 // leaks through a command's output is removed before it is stored. Longest first, so overlaps collapse once.
-export function redactSecrets(text,secrets=[]){
+// A lower floor is used for saved logins, whose usernames are shorter than a secret may be and can come
+// back from a page Roundtable just typed them into.
+export function redactSecrets(text,secrets=[],min=SECRET_LIMITS.minValue){
  let out=String(text??'');
- for(const value of secrets.map(s=>s?.value).filter(v=>typeof v==='string'&&v.length>=SECRET_LIMITS.minValue).sort((a,b)=>b.length-a.length))out=out.split(value).join('[secret redacted]');
+ for(const value of secrets.map(s=>s?.value).filter(v=>typeof v==='string'&&v.length>=min).sort((a,b)=>b.length-a.length))out=out.split(value).join('[secret redacted]');
  return out;
 }
 // What the agent is allowed to know: the name to use and why it exists.

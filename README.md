@@ -1,4 +1,4 @@
-# Roundtable 0.9.0
+# Roundtable 0.10.0
 
 A local group chat with one to four agents. You send a message, each selected agent replies once in order, then the room stops until you send another message. Later speakers see earlier replies. A routine can send a message for you on a schedule, and the room then takes that same single turn. No autonomous continuation button or background conversation loop.
 
@@ -116,7 +116,37 @@ A secret is a value your agents' commands can use but your agents never see. It 
 
 ### What is not here, and why
 
-The spec this was modelled on also has a Vault of website logins, card numbers and contact details. That feature exists there because that app drives a browser on its own machine and types the values into real web pages, which is what lets it promise that the model never sees them. Roundtable has no browser and no computer use: its agents are two command-line tools and some chat-only API participants. A stored password here could only ever be used by putting it into a prompt, which is the one thing the original design exists to prevent. Storing card numbers and website passwords in a plain local file, to deliver less safety than the password manager already on your Mac, is not worth doing, so it is deliberately absent. Secrets above are the part of that idea that does hold: a value that reaches the work without reaching the model.
+The spec this was modelled on keeps card numbers and contact details in the same vault as website logins. Roundtable saves website sign-ins, below, because it now has a browser to type them into. It does not store card numbers: a purchase is not something an agent here should be able to complete on its own, and a card number kept for that purpose would be a plain local file offering less than the payment sheet already on your Mac.
+
+## Browser
+
+A room can be given a real browser window. Codex and Claude drive it one step at a time with a command, `rtbrowse`, and you watch it happen. Turn it on per room in Room settings, under Shared context and project access.
+
+Roundtable launches Brave, Chrome or Edge with a profile of its own inside your Roundtable data folder. It never reads or changes your everyday browser, its cookies or its history, and it does not use the macOS login keychain. The window is visible on purpose: watching it, and taking the mouse whenever you like, is the review step an unattended click would not otherwise get.
+
+What an agent can do: open a page, read it, click a numbered element, type into a field, press a key, scroll, wait, go back or forward, reload, take a screenshot for your window, list your saved sign-ins by name, and use one. That is the whole list; anything else is refused by name. Each step answers with the page that resulted, so an agent is never acting on a page it has not been shown.
+
+The limits that hold:
+
+- Only `open` can start a window. Every other step needs a page already in front of the browser.
+- Only http and https. Downloads are blocked at the browser level.
+- A Lounge room cannot reach `localhost`, your network or any private address. A Work room can, because it already has a project folder and a shell.
+- Roundtable's own address is always refused.
+- Forty steps per turn, then the agent has to report back and let you ask for more.
+- The command only exists while that agent's own turn is running, with a token minted for that turn. When the turn ends the token stops working; when browsing is off for a room, the command is not on the agent's path at all.
+- Page text is reported up to about 7,000 characters, and the agent is told when it was cut, so one long page cannot eat the room's context.
+- A page is untrusted text. The prompt tells each agent that instructions written on a page are never its instructions, that nothing on the web is permission to buy, send, post or agree to anything, and that it must come back and ask you first.
+
+### Saved sign-ins
+
+A sign-in is a name, a site, a username and a password. Roundtable types the username and password into the page itself.
+
+- An agent is told the name and the site. It is never given the username or the password, and it cannot read either back: both are removed from anything it reports, including the page text it reads afterwards and the address of the page it lands on.
+- A sign-in is typed only when the page in front of the browser is that exact site. A look-alike domain, the same site over plain http, or a different subdomain gets nothing.
+- Codes sent to your phone and device confirmations are yours to finish, in the window.
+- Values live in a private file in your Roundtable data folder with user-only permissions, never in `rooms.json`, never in the window, never in an export. This is a plain local file, not the macOS Keychain.
+- A screenshot is a picture of your own window and goes only to your Roundtable window. It is never given to an agent.
+- Whatever that browser profile is signed in to stays signed in for every room that can browse, until you delete browsing data in Browser. Save sign-ins you are willing to let an agent use.
 
 ## Agent characters
 
